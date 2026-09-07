@@ -197,6 +197,68 @@ tests/        单元测试与集成测试
 | `logging.maxFiles` | `10` | 保留文件数 |
 | `logging.zipped` | `false` | 滚动后是否压缩 |
 
+## pm2 管理（Linux 服务器）
+
+长驻运行实时监控时，建议用 [pm2](https://pm2.keymetrics.io/) 守护进程：崩溃自动重启、开机自启、统一查看日志。本仓库不内置 ecosystem 配置，直接用命令行即可。
+
+### 安装 pm2
+
+```bash
+sudo npm install -g pm2
+pm2 -v   # 验证安装
+```
+
+> npm 全局目录若未加入 PATH，pm2 命令可能找不到；可用 `npm prefix -g` 确认。
+
+### 启动实时监控服务
+
+```bash
+# 在仓库根目录执行（先确保 config.json 已就绪）
+pm2 start npm --name silver-bullet-monitor -- run monitor
+```
+
+说明：
+
+- `npm` 是 pm2 内置的 npm 脚本运行器；`--name silver-bullet-monitor` 固定服务名，便于后续管理。
+- 若已存在同名旧服务，会报错，先 `pm2 delete silver-bullet-monitor` 再启动。
+- `pm2 start npm --name silver-bullet-batch -- run start` 也可用，但批量信号引擎跑完即退出、无常驻价值，一般**不需要**用 pm2 守护。
+
+### 常用命令
+
+```bash
+pm2 status                             # 查看服务状态（online/stopped/errored、重启次数、内存）
+pm2 logs silver-bullet-monitor         # 实时查看 pm2 捕获的控制台日志
+pm2 monit                              # 资源占用面板（cpu/mem）
+pm2 restart silver-bullet-monitor      # 修改 config.json / 代码后重启
+pm2 reload silver-bullet-monitor       # 零停机重载
+pm2 stop silver-bullet-monitor         # 停止（保留进程记录）
+pm2 delete silver-bullet-monitor       # 彻底移除
+```
+
+### 开机自启
+
+```bash
+pm2 save                     # 保存当前进程列表
+pm2 startup systemd          # 生成自启脚本，按输出提示执行给出的 sudo 命令
+pm2 resurrect                # 立即按保存列表拉起
+```
+
+之后服务器重启会自动拉起 `silver-bullet-monitor`。取消自启用 `pm2 unstartup systemd`。
+
+### 日志说明
+
+监控进程有两路日志，互不冲突：
+
+- **应用日志**（winston）：写在 `logging.dir`（默认 `logs/`），按天滚动，见上文"日志"章节——这才是排查告警/信号的主要依据。
+- **pm2 输出**：`pm2 logs` 显示的进程 stdout/stderr 流，存于 `~/.pm2/logs/silver-bullet-monitor-{out,error}.log`。
+
+### 退出码与自愈语义
+
+`src/monitor-cli.ts` 收到 `SIGINT/SIGTERM` 时 `process.exit(0)` 正常退出，其余异常以 `process.exit(1)` 结束。pm2 默认对两者都会自动重启（`restart`），因此：
+
+- 主动运维停止用 `pm2 stop`（而非直接 kill），避免被 pm2 自动拉回；
+- 若希望"正常退出后不再重启、仅异常才重启"，可加 `--restart-delay` 并配合 `stop` 使用；大多数场景默认自动重启即足够。
+
 ## 日志
 
 使用 [winston](https://github.com/winstonjs/winston) + `winston-daily-rotate-file`，**控制台 + 文件双输出**（可读文本格式，带时间戳与级别）。文件按日期分文件，单文件超过 `maxSizeMb` 自动滚动，`maxFiles` 限制保留数，`zipped` 可选压缩滚动文件。
