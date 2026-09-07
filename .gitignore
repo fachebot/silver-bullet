@@ -1,0 +1,8 @@
+.cache/
+.commandcode
+
+node_modules/
+dist/
+output/
+logs/
+config.json

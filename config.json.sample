@@ -1,0 +1,53 @@
+{
+  "swings": {
+    "left": 5
+  },
+  "fvg": {
+    "mode": "Super-Strict",
+    "extend": true
+  },
+  "targets": {
+    "sessionOption": "previous session (similar)",
+    "keepLines": true
+  },
+  "data": {
+    "exchange": "binance",
+    "symbol": "BTCUSDT",
+    "interval": "5m",
+    "startTime": null,
+    "endTime": null,
+    "syminfoType": "crypto",
+    "baseUrl": null,
+    "proxyUrl": null,
+    "proxyUsername": null,
+    "proxyPassword": null,
+    "refresh": false
+  },
+  "monitor": {
+    "symbols": ["BTCUSDT", "ETHUSDT"],
+    "warmupDays": 30,
+    "pollSeconds": 5,
+    "useWebSocket": true,
+    "notifySessionBoundary": true,
+    "lark": {
+      "appId": "",
+      "appSecret": "",
+      "baseUrl": "https://open.larksuite.com",
+      "userIdType": "open_id",
+      "urgentOpenIds": []
+    }
+  },
+  "logging": {
+    "level": "info",
+    "dir": "logs",
+    "maxSizeMb": 10,
+    "maxFiles": 10,
+    "zipped": false
+  },
+  "market": {
+    "statusApiBase": "https://fincalapi.com",
+    "apiKey": "",
+    "cacheSeconds": 300,
+    "useLocalFallback": true
+  }
+}

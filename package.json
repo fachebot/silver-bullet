@@ -1,0 +1,31 @@
+{
+  "name": "silver-bullet",
+  "version": "1.0.0",
+  "description": "ICT Silver Bullet 实时监控系统（LuxAlgo Pine 指标的 TS 实现 + Binance 监控 + Lark 加急通知）",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "start": "tsx src/index.ts",
+    "monitor": "tsx src/monitor-cli.ts"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "bignumber.js": "^11.1.5",
+    "luxon": "^3.7.2",
+    "node-fetch": "^3.3.2",
+    "proxy-agent": "^8.0.2",
+    "winston": "^3.19.0",
+    "winston-daily-rotate-file": "^5.0.0",
+    "ws": "^8.21.3",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/luxon": "^3.7.5",
+    "@types/node": "^26.4.1",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
+  }
+}
