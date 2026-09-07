@@ -35,10 +35,22 @@ const INTERVAL_MS: Record<string, number> = {
 
 const MAX_LIMIT = 1500
 
+// 超过该时长无任何推送（含进行中 bar）即视为"假活"（连接在但数据被墙），强制断开触发重连
+export const STALE_STREAM_MS = 90_000
+
 // 单次分页拉取的最大 bar 数（Binance 上限 1500）
 export interface BinanceSourceOptions {
   baseUrl?: string | null
   proxy?: ProxyConfig | null
+  http?: HttpClient // 测试注入用；缺省按 proxy 创建
+}
+
+// 判定分页结果是否覆盖到请求窗口 [startTime, endTime] 的尾部：
+// 末尾 bar 的开盘时间 + 周期 ≥ endTime 才算取到了窗口内的最后一根已收盘 bar；
+// 若提前 break（空页/服务端未推进）或缺尾部数据，末尾 bar 会落后 endTime 至少一个周期 → false
+export function coverageOk(bars: Kline[], intervalMs: number, endTime: number): boolean {
+  if (bars.length === 0) return false
+  return bars[bars.length - 1].time + intervalMs >= endTime
 }
 
 // 解析原始 K 线行：[开盘时间, O, H, L, C, V, 收盘时间, ...]
@@ -61,7 +73,7 @@ export class BinanceSource implements DataSource {
 
   constructor(opts: BinanceSourceOptions = {}) {
     this.baseUrl = opts.baseUrl ?? DEFAULT_BASE_URL
-    this.http = createHttpClient(opts.proxy)
+    this.http = opts.http ?? createHttpClient(opts.proxy)
     // WebSocket 代理（与 REST 一致：配置代理时走代理）
     if (opts.proxy?.url) {
       this.wsAgent = new ProxyAgent({ getProxyForUrl: () => buildProxyUrl(opts.proxy!) })
@@ -105,33 +117,51 @@ export class BinanceSource implements DataSource {
       return cached
     }
 
-    const bars: Kline[] = []
-    let cursor = startTime
-    let guard = 0
-    while (cursor < endTime) {
-      if (++guard > 2000) throw new Error('分页次数超限，请检查时间范围')
-      const url =
-        `${this.baseUrl}/fapi/v1/klines?symbol=${encodeURIComponent(req.symbol)}` +
-        `&interval=${req.interval}&limit=${MAX_LIMIT}&startTime=${cursor}&endTime=${endTime}`
-      const raw = (await this.http.getJson(url)) as unknown[][]
-      if (!Array.isArray(raw) || raw.length === 0) break
-      const parsed = raw.map(parseKline)
-      bars.push(...parsed)
-      const lastTime = parsed[parsed.length - 1].time
-      const next = lastTime + intervalMs
-      if (next <= cursor) break // 避免死循环
-      cursor = next
+    // 拉取并分页；若结果未覆盖到窗口尾部（可能中途断页/提前 break），整窗重试一次
+    const doFetch = async (): Promise<Kline[]> => {
+      const bars: Kline[] = []
+      let cursor = startTime
+      let guard = 0
+      while (cursor < endTime) {
+        if (++guard > 2000) throw new Error('分页次数超限，请检查时间范围')
+        const url =
+          `${this.baseUrl}/fapi/v1/klines?symbol=${encodeURIComponent(req.symbol)}` +
+          `&interval=${req.interval}&limit=${MAX_LIMIT}&startTime=${cursor}&endTime=${endTime}`
+        const raw = (await this.http.getJson(url)) as unknown[][]
+        if (!Array.isArray(raw) || raw.length === 0) break
+        const parsed = raw.map(parseKline)
+        bars.push(...parsed)
+        const lastTime = parsed[parsed.length - 1].time
+        const next = lastTime + intervalMs
+        if (next <= cursor) break // 避免死循环
+        cursor = next
+      }
+
+      // 去重 + 按时间升序
+      const seen = new Set<number>()
+      return bars
+        .filter((b) => {
+          if (seen.has(b.time)) return false
+          seen.add(b.time)
+          return true
+        })
+        .sort((a, b) => a.time - b.time)
     }
 
-    // 去重 + 按时间升序
-    const seen = new Set<number>()
-    const unique = bars
-      .filter((b) => {
-        if (seen.has(b.time)) return false
-        seen.add(b.time)
-        return true
-      })
-      .sort((a, b) => a.time - b.time)
+    let unique = await doFetch()
+    // 空窗口（无交易/未来区间/start==end）保持旧行为：直接返回空、不写缓存
+    if (unique.length === 0) return unique
+    if (!coverageOk(unique, intervalMs, endTime)) {
+      // 有数据但缺尾部（可能中途断页/提前 break）→ 整窗重试一次
+      getLogger().warn(`[数据] ${req.symbol} ${req.interval} 分页结果未覆盖窗口尾部，整窗重试一次`)
+      unique = await doFetch()
+    }
+    // 仍不完整 → 抛错且不落缓存（避免把缺口静默当完整）
+    if (unique.length > 0 && !coverageOk(unique, intervalMs, endTime)) {
+      throw new Error(
+        `拉取不完整: ${req.symbol} ${req.interval} 分页重试后仍缺尾部（endTime=${endTime}, 末尾 bar=${unique[unique.length - 1].time}），未写入缓存`,
+      )
+    }
 
     saveCachedKlines(this.name, req, startTime, endTime, unique)
     getLogger().info(`[数据] 拉取完成: ${req.symbol} ${req.interval} 共 ${unique.length} 根 K 线`)
@@ -177,11 +207,21 @@ export class BinanceSource implements DataSource {
     let lastMsgTime = 0
     const msgCount = new Map<string, number>()
 
-    // 每 30s 输出推送心跳，确认数据持续推送
+    // 每 30s 输出推送心跳，确认数据持续推送；静默超时强制重连（防"假活"）
     const heartbeat = setInterval(() => {
       if (stopped) return
+      const idleMs = Date.now() - lastMsgTime
       if (totalMsg === 0) {
-        getLogger().warn('[WS] 近 30s 无推送（可能被网络阻断或未订阅成功）')
+        if (reconnectTimer === null && shouldForceReconnect(idleMs)) {
+          getLogger().warn(`[WS] 近 ${STALE_STREAM_MS / 1000}s 无推送，判定连接假活，强制重连`)
+          try {
+            ws?.terminate() // 触发 close → scheduleReconnect（复用指数退避）
+          } catch {
+            // 忽略
+          }
+        } else {
+          getLogger().warn('[WS] 近 30s 无推送（可能被网络阻断或未订阅成功）')
+        }
       } else {
         const parts = [...msgCount.entries()].map(([s, n]) => `${s}:${n}`).join(' ')
         getLogger().info(`[WS] 推送正常：30s 内 ${totalMsg} 条（${parts}）`)
@@ -206,6 +246,7 @@ export class BinanceSource implements DataSource {
       ws.on('open', () => {
         reconnectDelay = 1000
         reconnectTimer = null
+        lastMsgTime = Date.now() // 重置假活时钟：连上即开始计时
         getLogger().info(`[WS] 已连接（${symbols.join(', ')}）`)
         // 重连成功后触发补数（首次连接不补）
         if (!isFirstConnect) {
@@ -319,6 +360,11 @@ interface KlinePayload {
   c?: string
   v?: string
   x?: boolean
+}
+
+// 判定连接是否"假活"：距最近一次收到推送的时间超过 staleMs 即应强制重连
+export function shouldForceReconnect(lastDataAgeMs: number, staleMs: number = STALE_STREAM_MS): boolean {
+  return lastDataAgeMs > staleMs
 }
 
 // 从合并流 stream 名提取 symbol（btcusdt@kline_5m → btcusdt）

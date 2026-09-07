@@ -97,6 +97,11 @@ export async function catchUpAfterReconnect(
   const logger = getLogger()
   const intervalMs = source.intervalToMs(interval)
   const last = ctx.lastProcessed.get(symbol) ?? 0
+  // 无基准（预热异常/从未处理过 bar）时不拉全史，等 WS/轮询自然推进首根 bar 建立基准
+  if (last <= 0) {
+    logger.warn(`[监控] ${symbol} lastProcessed 为空，跳过断线补数（等待实时数据建立基准）`)
+    return 0
+  }
   const nowFloor = Math.floor(now() / intervalMs) * intervalMs
   if (nowFloor <= last) return 0
   const bars = await source.fetchKlines({
@@ -128,7 +133,10 @@ export async function pollForNewBars(
 ): Promise<number> {
   const intervalMs = source.intervalToMs(interval)
   const last = ctx.lastProcessed.get(symbol) ?? 0
-  const recent = await source.fetchRecentKlines(symbol, interval, 3)
+  // 拉最近 50 根（5m≈4h 覆盖）：REST 抖动/短暂断流期间漏掉的 bar 会在下次成功轮询时自动补齐，
+  // 弱化对"恰好每次轮询都拉到最新收盘 bar + 本地时钟对齐"的依赖。
+  // 注：未收盘 bar 会被下方 time + intervalMs <= now() 过滤；交易所只在收盘后才返回已确定 K 线，风险低。
+  const recent = await source.fetchRecentKlines(symbol, interval, 50)
   let alerts = 0
   for (const bar of recent) {
     // 仅处理已收盘（bar 结束时间 ≤ 当前）且比 last 新的 bar；handleClosedBar 内部再按 time>last 去重
@@ -162,10 +170,10 @@ export async function runMonitor(
   ctx.marketStatus = createMarketStatusResolver(config.market, createHttpClient(proxy))
   const unsubs: Array<() => void> = []
 
-  // 预热：每币种拉历史并 run（静默建状态）
+  // 预热：每币种拉历史并 run（静默建状态；live 模式：不累积输出、按存活窗口剪枝 FVG）
   for (const symbol of config.monitor.symbols) {
     const tickSize = await source.fetchTickSize(symbol)
-    const engine = new Engine(deriveConfig(config, tickSize), symbol, interval)
+    const engine = new Engine(deriveConfig(config, tickSize), symbol, interval, { live: true })
     const end = Math.floor(Date.now() / intervalMs) * intervalMs
     const start = end - warmupMs
     const hist = await source.fetchKlines({ symbol, interval, startTime: start, endTime: end })

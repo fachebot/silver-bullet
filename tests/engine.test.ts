@@ -8,7 +8,7 @@
 
 import { describe, it, expect } from 'vitest'
 import BigNumber from 'bignumber.js'
-import { Engine } from '../src/engine/engine.js'
+import { Engine, LIVE_MAX_FVG_AGE } from '../src/engine/engine.js'
 import { defaultConfig } from '../src/config/default.js'
 import { deriveConfig } from '../src/config/load.js'
 import type { Kline } from '../src/data/types.js'
@@ -171,5 +171,68 @@ describe('引擎端到端（Super-Strict endSB 收盘过滤 → closed）', () =
     expect(evs).not.toContain('invalidated')
     expect(f!.active).toBe(false)
     expect(f!.right).toBe(f!.left) // 收口
+  })
+})
+
+describe('Engine live 模式（监控长跑剪枝）', () => {
+  const makeEngine = (live: boolean) => {
+    const config = structuredClone(defaultConfig)
+    config.fvg.mode = 'All FVG'
+    const cfg = deriveConfig(config, new BigNumber('0.01'))
+    return new Engine(cfg, 'TESTUSDT', '5m', { live })
+  }
+
+  // 确定性行情：t0=06:30 UTC（02:30 NY）。每个 288-bar 日周期内 LN 会话（NY 03:00-04:00 = bar 6..17）
+  // 用 dip+gap 造 2 个 bull FVG（All FVG 需 low > high[2]）：
+  //   bar 6 高=100（作 m=8 的下沿），bar 8 low=110 → FVG；bar 9 高=100，bar 11 low=112 → FVG
+  // 会话外 bar 高=105/low=95，不产生 FVG。
+  function barAt(k: number): Kline {
+    const m = k % 288
+    if (m === 6 || m === 9) return mkBar(t0(k), 100, 100, 90, 100)
+    if (m === 8) return mkBar(t0(k), 108, 112, 110, 111)
+    if (m === 11) return mkBar(t0(k), 110, 114, 112, 113)
+    return mkBar(t0(k), 100, 105, 95, 104)
+  }
+  const t0 = (k: number): number => Date.UTC(2024, 6, 1, 6, 30) + k * 300_000
+
+  function feed(engine: Engine, count: number): number {
+    let created = 0
+    for (let k = 0; k < count; k++) {
+      created += engine.feedBar(barAt(k)).createdFvgs.length
+    }
+    return created
+  }
+
+  it('live 模式：长跑后 FVG 被剪枝、总量远小于总创建数', () => {
+    const live = makeEngine(true)
+    const batch = makeEngine(false)
+    const days = 100 // 100 天 = 28800 bar
+    const n = days * 288
+    const liveCreated = feed(live, n)
+    const batchCreated = feed(batch, n)
+    expect(liveCreated).toBeGreaterThan(0)
+    expect(batchCreated).toBeGreaterThan(0)
+    expect(liveCreated).toBe(batchCreated) // 同一行情，创建数一致
+    // 批量模式累积全部 FVG（100 天 → 每会话 2 个 → ~200）
+    expect(batch.fvgCount).toBeGreaterThan(100)
+    // live 模式仅保留存活窗口内的 FVG（≈ 1000/288 会话 × 2）
+    expect(live.fvgCount).toBeLessThanOrEqual(LIVE_MAX_FVG_AGE)
+    expect(live.fvgCount).toBeLessThan(50)
+    expect(live.fvgCount).toBeGreaterThan(0)
+  })
+
+  it('live 与批量 feedBar 结果一致（created/趋势不受剪枝影响）', () => {
+    const a = makeEngine(true)
+    const b = makeEngine(false)
+    // 跨多个会话喂 3 天，逐 bar 对比 createdFvgs
+    const n = 3 * 288
+    for (let k = 0; k < n; k++) {
+      const ra = a.feedBar(barAt(k))
+      const rb = b.feedBar(barAt(k))
+      expect(ra.createdFvgs.length).toBe(rb.createdFvgs.length)
+    }
+    // 被剪枝的是批量里已经"过期"的；活跃窗口内二者数量相当（live ≤ batch）
+    expect(a.fvgCount).toBeGreaterThan(0)
+    expect(a.fvgCount).toBeLessThanOrEqual(b.fvgCount)
   })
 })

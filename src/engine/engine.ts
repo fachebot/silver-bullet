@@ -36,6 +36,15 @@ import type {
 // ZigZag 环形缓冲容量（Pine: maxSize = 250）
 const ZZ_SIZE = 250
 
+// 实时（live）模式 FVG 存活窗口（bar 数）：与批量引擎的 i - bLeft < 1000 一致；
+// live 模式把超出该窗口的 FVG 从数组/Map 中剔除，避免监控长跑内存/CPU 线性增长
+export const LIVE_MAX_FVG_AGE = 1000
+
+export interface EngineOptions {
+  // live=true：增量监控模式。不累积 out.* 输出数组、不 finalize，并按 LIVE_MAX_FVG_AGE 剪枝 FVG
+  live?: boolean
+}
+
 // 创建初始全局状态（对应 Pine 的 var 变量初始化）
 function createInitialState(): EngineState {
   const mkSession = (): SessionState => ({
@@ -82,6 +91,7 @@ function createEmptyOutput(symbol: string, interval: string): EngineOutput {
 
 export class Engine {
   private cfg: DerivedConfig
+  private live: boolean
   private state: EngineState
   private out: EngineOutput
   private fvgMap = new Map<number, FvgRecord>()
@@ -96,8 +106,9 @@ export class Engine {
   private prevFlags: SessionFlags = emptySessionFlags()
   private lastCreationTrend = 0
 
-  constructor(cfg: DerivedConfig, symbol: string, interval: string) {
+  constructor(cfg: DerivedConfig, symbol: string, interval: string, opts: EngineOptions = {}) {
     this.cfg = cfg
+    this.live = opts.live === true
     this.state = createInitialState()
     this.out = createEmptyOutput(symbol, interval)
   }
@@ -107,7 +118,7 @@ export class Engine {
     for (const bar of bars) {
       this.feedBar(bar)
     }
-    this.finalizeOutput()
+    if (!this.live) this.finalizeOutput()
     this.out.meta.barCount = bars.length
     this.out.meta.startTime = bars[0]?.time ?? 0
     this.out.meta.endTime = bars[bars.length - 1]?.time ?? 0
@@ -134,6 +145,11 @@ export class Engine {
       }
     }
 
+    // live 模式：剪枝超出存活窗口的最老 FVG（unshift 头新尾旧 → 从尾 pop）
+    if (this.live) {
+      this.pruneFvgs(i)
+    }
+
     return {
       barIndex: i,
       time: bar.time,
@@ -143,6 +159,11 @@ export class Engine {
       session: flags.ln ? 'LN' : flags.am ? 'AM' : flags.pm ? 'PM' : null,
       createdFvgs,
     }
+  }
+
+  // live 模式调试/测试辅助：当前内部持有的 FVG 总数（bull+bear 未剪枝部分）
+  get fvgCount(): number {
+    return this.state.bFVG_bull.length + this.state.bFVG_bear.length
   }
 
   // 单根 bar 的处理（对应 Pine 脚本主执行区）
@@ -186,8 +207,8 @@ export class Engine {
         }
       }
     }
-    if (targetHi) this.out.signals.push({ type: 'targetHi', bar: i, time: bar.time })
-    if (targetLo) this.out.signals.push({ type: 'targetLo', bar: i, time: bar.time })
+    if (targetHi && !this.live) this.out.signals.push({ type: 'targetHi', bar: i, time: bar.time })
+    if (targetLo && !this.live) this.out.signals.push({ type: 'targetLo', bar: i, time: bar.time })
 
     // 4. if strSB：重置 min/max、锁定上一会话 FVG
     if (flags.strSB) {
@@ -220,7 +241,9 @@ export class Engine {
     this.trackSessions(flags, i, bar.time)
 
     // 每 bar 趋势输出（aTrend 最终值 = 最后执行的 f_swings 的 MSS_dir）
-    this.out.trend.push({ bar: i, time: bar.time, value: state.trend })
+    if (!this.live) {
+      this.out.trend.push({ bar: i, time: bar.time, value: state.trend })
+    }
   }
 
   // f_setTrend()：基于 ZigZag 的全局 MSS 趋势
@@ -287,12 +310,14 @@ export class Engine {
         if (ph.gte(s.swingH[k].p)) s.swingH.splice(k, 1)
       }
       s.swingH.unshift({ b: i - 1, p: ph, br: false })
-      this.out.pivots.push({
-        kind: 'high',
-        bar: i - 1,
-        time: i >= 1 ? this.times[i - 1] : bar.time,
-        price: ph,
-      })
+      if (!this.live) {
+        this.out.pivots.push({
+          kind: 'high',
+          bar: i - 1,
+          time: i >= 1 ? this.times[i - 1] : bar.time,
+          price: ph,
+        })
+      }
       if (sess === 'GN' || sess === 'LN') {
         const zz = state.aZZ
         const dir = zz.d[0]
@@ -316,12 +341,14 @@ export class Engine {
         if (pl.lte(s.swingL[k].p)) s.swingL.splice(k, 1)
       }
       s.swingL.unshift({ b: i - 1, p: pl, br: false })
-      this.out.pivots.push({
-        kind: 'low',
-        bar: i - 1,
-        time: i >= 1 ? this.times[i - 1] : bar.time,
-        price: pl,
-      })
+      if (!this.live) {
+        this.out.pivots.push({
+          kind: 'low',
+          bar: i - 1,
+          time: i >= 1 ? this.times[i - 1] : bar.time,
+          price: pl,
+        })
+      }
       if (sess === 'GN' || sess === 'LN') {
         const zz = state.aZZ
         const dir = zz.d[0]
@@ -363,7 +390,9 @@ export class Engine {
             brokenBar: null,
             brokenTime: null,
           }
-          s.targets.push(tl)
+          // live 模式不累积 per-session targets（finalizeOutput 被跳过、无消费者）；
+          // 仍须把同一 tl 对象挂到活跃线 highs 上，供突破时更新 brokenBar/brokenTime
+          if (!this.live) s.targets.push(tl)
           state.highs.unshift({ y, active: true, target: tl })
         }
       }
@@ -379,7 +408,7 @@ export class Engine {
             brokenBar: null,
             brokenTime: null,
           }
-          s.targets.push(tl)
+          if (!this.live) s.targets.push(tl)
           state.lows.unshift({ y, active: true, target: tl })
         }
       }
@@ -403,13 +432,14 @@ export class Engine {
     zz.x.pop()
     zz.y.pop()
     // 记录 ZigZag 节点（数据模式下等价于 showZZ 画线）
-    if (x2 >= 0) {
+    if (x2 >= 0 && !this.live) {
       this.out.zigzag.push({ dir: d as 1 | -1, bar: x2, time: this.times[x2], price: y2 })
     }
   }
 
   // 记录 MSS 事件
   private recordMss(sess: SessionKey, direction: 1 | -1, i: number, time: number): void {
+    if (this.live) return // live 模式不累积 MSS 输出
     this.out.mss.push({ direction, bar: i, time, session: sess })
   }
 
@@ -420,6 +450,23 @@ export class Engine {
     }
     for (const f of this.state.bFVG_bear) {
       if (i > f.box.right - 1 && f.current) f.current = false
+    }
+  }
+
+  // live 模式剪枝：剔除左缘早于存活窗口的 FVG。
+  // 数组经 unshift 头插，尾部为最老元素；批量引擎对 i - bLeft < 1000 之外的元素已不再迭代，
+  // 这里直接弹出以控制监控长跑时的内存/迭代成本（fvgMap 同步删除）。
+  private pruneFvgs(i: number): void {
+    this.pruneOne(i, this.state.bFVG_bull)
+    this.pruneOne(i, this.state.bFVG_bear)
+  }
+
+  private pruneOne(i: number, list: FVG[]): void {
+    while (list.length > 0) {
+      const tail = list[list.length - 1]
+      if (i - tail.box.left < LIVE_MAX_FVG_AGE) break
+      this.fvgMap.delete(tail.id)
+      list.pop()
     }
   }
 
@@ -615,6 +662,7 @@ export class Engine {
     i: number,
     time: number,
   ): void {
+    if (this.live) return // live 模式不累积会话输出
     if (start) this.sessionsOpen[sess] = { startBar: i, startTime: time }
     if (end && this.sessionsOpen[sess]) {
       const open = this.sessionsOpen[sess]!
@@ -632,6 +680,7 @@ export class Engine {
 
   // 收尾：汇总 FVG 最终状态与目标线
   private finalizeOutput(): void {
+    if (this.live) return // live 模式不消费输出数组，跳过汇总
     const state = this.state
     const records: FvgRecord[] = []
     for (const f of [...state.bFVG_bull, ...state.bFVG_bear]) {

@@ -7,7 +7,7 @@ import { gradeFvg } from '../src/monitor/grade.js'
 import { formatFvgAlert } from '../src/monitor/format.js'
 import { LarkClient, type LarkConfig } from '../src/monitor/lark.js'
 import { handleClosedBar, catchUpAfterReconnect, pollForNewBars, type MonitorContext } from '../src/monitor/monitor.js'
-import { parseKlineMessage, parseKlineUpdate } from '../src/data/binance.js'
+import { parseKlineMessage, parseKlineUpdate, shouldForceReconnect, STALE_STREAM_MS } from '../src/data/binance.js'
 import type { HttpClient } from '../src/data/httpClient.js'
 import type { DataSource, KlineRequest } from '../src/data/exchange.js'
 import type { Kline } from '../src/data/types.js'
@@ -74,6 +74,18 @@ describe('formatFvgAlert', () => {
     expect(msg).toContain('看涨 FVG')
     expect(msg).toContain('范围：64281.4 ~ 64310.4')
     expect(msg).toContain('质量：⭐⭐⭐ Super-Strict')
+  })
+})
+
+describe('shouldForceReconnect（WS 假活判定）', () => {
+  it('距最近推送超过阈值 → 强制重连', () => {
+    expect(shouldForceReconnect(STALE_STREAM_MS + 1)).toBe(true)
+    expect(shouldForceReconnect(120_000)).toBe(true) // > 90s
+  })
+  it('距最近推送未超阈值 → 不强制', () => {
+    expect(shouldForceReconnect(0)).toBe(false)
+    expect(shouldForceReconnect(STALE_STREAM_MS)).toBe(false) // 恰好等于阈值不算假活
+    expect(shouldForceReconnect(30_000)).toBe(false)
   })
 })
 
@@ -296,6 +308,21 @@ describe('catchUpAfterReconnect（断线补数）', () => {
     // 时间对齐到 bar11 收盘（lastProcessed），无缺口
     const alerts = await catchUpAfterReconnect(ctx, source, 'BTCUSDT', '5m', lark as never, () => T0 + 11 * 300_000)
     expect(alerts).toBe(0)
+    expect(lark.texts).toHaveLength(0)
+  })
+
+  it('lastProcessed 为空（无基准）→ 不拉全史、不告警', async () => {
+    const { ctx, lark, source } = setup()
+    const fetchCalls: KlineRequest[] = []
+    source.fetchKlines = async (req: KlineRequest) => {
+      fetchCalls.push(req)
+      return source.bars
+    }
+    // 预热异常 → lastProcessed 为 0（无基准）
+    ctx.lastProcessed.set('BTCUSDT', 0)
+    const alerts = await catchUpAfterReconnect(ctx, source, 'BTCUSDT', '5m', lark as never)
+    expect(alerts).toBe(0)
+    expect(fetchCalls).toHaveLength(0) // 不得拉全史
     expect(lark.texts).toHaveLength(0)
   })
 })

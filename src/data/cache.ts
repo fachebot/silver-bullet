@@ -32,10 +32,18 @@ export function loadCachedKlines(
   if (!existsSync(path)) return null
   try {
     const data = JSON.parse(readFileSync(path, 'utf-8')) as CacheFile
-    if (data.meta.exchange !== exchange || data.meta.symbol !== req.symbol || data.meta.interval !== req.interval) {
+    // meta 全量校验：除 exchange/symbol/interval 外，还须与请求的时间窗一致（防手工改动/时间窗不匹配时静默返回错误范围）
+    const meta = data.meta
+    if (
+      meta.exchange !== exchange ||
+      meta.symbol !== req.symbol ||
+      meta.interval !== req.interval ||
+      meta.startTime !== startTime ||
+      meta.endTime !== endTime
+    ) {
       return null
     }
-    return data.bars.map((b) => ({
+    const bars = data.bars.map((b) => ({
       time: b[0],
       open: new BigNumber(b[1]),
       high: new BigNumber(b[2]),
@@ -43,6 +51,11 @@ export function loadCachedKlines(
       close: new BigNumber(b[4]),
       volume: new BigNumber(b[5]),
     }))
+    // 数据须升序（乱序/损坏视为脏缓存，走网络重拉）
+    for (let i = 1; i < bars.length; i++) {
+      if (bars[i].time <= bars[i - 1].time) return null
+    }
+    return bars
   } catch {
     return null
   }
