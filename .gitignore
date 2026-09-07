@@ -3,6 +3,6 @@
 
 node_modules/
 dist/
-output/
+/output/
 logs/
 config.json
