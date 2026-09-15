@@ -29,33 +29,44 @@ function mkBar(time: number, o: number, h: number, l: number, c: number): Kline 
   }
 }
 
-describe('gradeFvg（星级判定）', () => {
+describe('gradeFvg（星级判定 · 收盘动量分位）', () => {
   const C = (n: number) => new BigNumber(n)
 
-  it('逆势 bull（trend≠1）→ 1 星 All FVG', () => {
-    const g = gradeFvg(0, 'bull', C(102), C(103), C(100))
+  it('逆势 bull（trend≠1）→ 1 星 逆势', () => {
+    const g = gradeFvg(0, 'bull', C(108), C(109), C(100))
     expect(g.stars).toBe(1)
-    expect(g.label).toBe('All FVG')
+    expect(g.label).toBe('逆势')
   })
-  it('逆势 bear（trend==1）→ 1 星 All FVG', () => {
-    const g = gradeFvg(1, 'bear', C(98), C(103), C(100))
+  it('逆势 bear（trend==1）→ 1 星 逆势', () => {
+    const g = gradeFvg(1, 'bear', C(101), C(109), C(100))
     expect(g.stars).toBe(1)
-    expect(g.label).toBe('All FVG')
+    expect(g.label).toBe('逆势')
   })
-  it('顺势 bull + close≥top → 3 星 Super-Strict', () => {
-    expect(gradeFvg(1, 'bull', C(105), C(103), C(100))).toEqual({ stars: 3, label: 'Super-Strict' })
+  it('顺势 bull：收盘在区间强势端 → 3 星 强（含 2/3 边界）', () => {
+    // low=100 high=109 range=9；strong=close-100；3★ 需 strong≥6
+    expect(gradeFvg(1, 'bull', C(107), C(109), C(100))).toEqual({ stars: 3, label: '强' })
+    expect(gradeFvg(1, 'bull', C(106), C(109), C(100))).toEqual({ stars: 3, label: '强' }) // 2/3 边界
   })
-  it('顺势 bull + 收盘在 box 内 → 2 星 Strict', () => {
-    expect(gradeFvg(1, 'bull', C(101), C(103), C(100))).toEqual({ stars: 2, label: 'Strict' })
+  it('顺势 bull：收盘在中间区 → 2 星 中（含 1/3 边界）', () => {
+    expect(gradeFvg(1, 'bull', C(105), C(109), C(100))).toEqual({ stars: 2, label: '中' })
+    expect(gradeFvg(1, 'bull', C(103), C(109), C(100))).toEqual({ stars: 2, label: '中' }) // 1/3 边界
   })
-  it('顺势 bull + close<bottom → 1 星 Only FVG in the same direction of trend', () => {
-    expect(gradeFvg(1, 'bull', C(99), C(103), C(100))).toEqual({ stars: 1, label: 'Only FVG in the same direction of trend' })
+  it('顺势 bull：收盘在弱势端 → 1 星 弱', () => {
+    expect(gradeFvg(1, 'bull', C(102), C(109), C(100))).toEqual({ stars: 1, label: '弱' })
   })
-  it('顺势 bear + close≤bottom → 3 星 Super-Strict', () => {
-    expect(gradeFvg(-1, 'bear', C(99), C(103), C(100))).toEqual({ stars: 3, label: 'Super-Strict' })
+  it('顺势 bear：收盘在区间弱势端（贴近 low）→ 3 星 强', () => {
+    expect(gradeFvg(-1, 'bear', C(102), C(109), C(100))).toEqual({ stars: 3, label: '强' })
+    expect(gradeFvg(-1, 'bear', C(103), C(109), C(100))).toEqual({ stars: 3, label: '强' })
   })
-  it('顺势 bear + close>top → 1 星 Only FVG', () => {
-    expect(gradeFvg(-1, 'bear', C(104), C(103), C(100))).toEqual({ stars: 1, label: 'Only FVG in the same direction of trend' })
+  it('顺势 bear：中间区 → 2 星 中', () => {
+    expect(gradeFvg(-1, 'bear', C(104), C(109), C(100))).toEqual({ stars: 2, label: '中' })
+    expect(gradeFvg(-1, 'bear', C(106), C(109), C(100))).toEqual({ stars: 2, label: '中' })
+  })
+  it('顺势 bear：收盘在强势端（贴近 high）→ 1 星 弱', () => {
+    expect(gradeFvg(-1, 'bear', C(107), C(109), C(100))).toEqual({ stars: 1, label: '弱' })
+  })
+  it('平 K（high==low）→ 1 星 弱', () => {
+    expect(gradeFvg(1, 'bull', C(100), C(100), C(100))).toEqual({ stars: 1, label: '弱' })
   })
 })
 
@@ -67,14 +78,14 @@ describe('formatFvgAlert', () => {
       time: T0,
       close: new BigNumber('64310.4'),
       fvg: { type: 'bull', top: new BigNumber('64310.4'), bottom: new BigNumber('64281.4') },
-      grade: { stars: 3, label: 'Super-Strict' },
+      grade: { stars: 3, label: '强' },
     })
     expect(msg).toContain('BTCUSDT')
     expect(msg).toContain('LN（03-04 NY）')
     expect(msg).toContain('现价：64310.4')
     expect(msg).toContain('看涨 FVG')
     expect(msg).toContain('范围：64281.4 ~ 64310.4')
-    expect(msg).toContain('质量：⭐⭐⭐ Super-Strict')
+    expect(msg).toContain('质量：⭐⭐⭐ 强')
   })
 })
 

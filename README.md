@@ -44,14 +44,18 @@ WS 断线自动重连（指数退避 1s→60s 封顶，`error` 也触发重连�
 
 ### Killzone FVG 告警
 
-引擎以 `fvg.mode=All FVG` 运行，对每个 FVG 按创建 bar 的趋势与收盘价相对 FVG 范围分级，用 ⭐ 表示：
+引擎按 `config.json` 的 `fvg.mode` 创建 FVG（`Super-Strict`/`Strict`/`Only FVG in the same direction of trend` 只创建与趋势同向的 FVG；`All FVG` 双向都创建），再对每个新 FVG 按**收盘动量分位**分级，用 ⭐ 表示：
 
 | 条件 | 星级 | 标签 |
 |---|---|---|
-| 逆势（仅 All FVG 会创建） | ⭐ | All FVG |
-| 顺势 且收盘在 FVG 强侧 | ⭐⭐⭐ | Super-Strict |
-| 顺势 且收盘在 FVG 内 | ⭐⭐ | Strict |
-| 顺势 且收盘在 FVG 弱侧 | ⭐ | Only FVG in the same direction of trend |
+| 逆势（bull 且趋势非多 / bear 且趋势为多；仅 `All FVG` 会创建） | ⭐ | 逆势 |
+| 顺势 且创建 bar 收盘在区间强势端（顺势端占比 ≥ 2/3） | ⭐⭐⭐ | 强 |
+| 顺势 且收盘在中间区（≥ 1/3 且 < 2/3） | ⭐⭐ | 中 |
+| 顺势 且收盘在弱势端（< 1/3） | ⭐ | 弱 |
+
+> 动量分位：`bull` 取 `(close − low) / (high − low)`，`bear` 取 `(high − close) / (high − low)`（创建 bar 自身区间）。平 K（`high == low`）记 ⭐ 弱。
+>
+> 说明：早前按“收盘相对 FVG 缺口边界”分级，但创建 bar 的收盘必然落在缺口强侧（bull `close ≥ low`、bear `close ≤ high`），2★/1★ 不可达；故改为按创建 bar 的收盘动量分位分级。
 
 消息示例：
 
@@ -62,7 +66,7 @@ WS 断线自动重连（指数退避 1s→60s 封顶，`error` 也触发重连�
 现价：64310.4
 方向：看涨 FVG
 范围：64281.4 ~ 64310.4
-质量：⭐⭐⭐ Super-Strict
+质量：⭐⭐⭐ 强
 纽约早盘：当前已开盘
 ```
 

@@ -91,7 +91,7 @@ export async function handleClosedBar(
     }
     const market = await resolveMarketStatus(ctx, res.session)
     for (const fvg of res.createdFvgs) {
-      const grade = gradeFvg(res.trend, fvg.type, res.close, fvg.top, fvg.bottom)
+      const grade = gradeFvg(res.trend, fvg.type, res.close, bar.high, bar.low)
       const msg = formatFvgAlert({
         symbol,
         session: res.session,
