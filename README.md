@@ -66,6 +66,29 @@ WS 断线自动重连（指数退避 1s→60s 封顶，`error` 也触发重连�
 纽约早盘：当前已开盘
 ```
 
+#### 缺口阈值（`fvg.minGapBySymbol`）
+
+缺口大小 = `box top − bottom`。可**按币种**配置最小缺口（绝对价格），仅当缺口 **大于** 阈值时才创建该 FVG（引擎侧过滤，批量引擎 `npm start` 同样生效）：
+
+```jsonc
+"fvg": {
+  "mode": "Super-Strict",
+  "extend": true,
+  "minGapBySymbol": { "BTCUSDT": 50, "ETHUSDT": 2 }   // 未列出的币种 = 0（不过滤）
+}
+```
+
+> 阈值为绝对价格，币价长期大幅变动后需相应调整。
+
+### 股票代币非交易日不推送
+
+对于 **Binance TradFi 股票代币**（`exchangeInfo.underlyingType = EQUITY`，如 `TSLAUSDT`、`AAPLUSDT`），监控会在其对应市场（**NYSE**）的**非交易日（周末/美股法定假日）**跳过 FVG 告警推送，避免休市日噪声。判定按 `market` 交易日历（FinCal API + 本地降级）。启动时会自动查询各 symbol 的 `underlyingType` 并记录日志。
+
+- **黄金等其他 TradFi 代币**（如 `XAUUSDT`，`underlyingType=COMMODITY`）与**加密货币**（`COIN`）**不受影响**，24/7 照常推送。
+- **会话边界通知**为全局通知，**不受此规则影响**，始终发送。
+- 股票类别仅识别 `EQUITY`；`HK/KR/CN_EQUITY`、`PREMARKET` 暂等同于加密货币（不抑制）。
+- 识别或市场状态查询失败时**降级为照常推送**（fail-open），不会漏报。
+
 ### 会话边界通知
 
 `monitor.notifySessionBoundary`（默认开）在 **America/New_York 整点**精确通知 LN/AM/PM 会话开始与结束（每边界一次、全局加急）：
@@ -172,6 +195,7 @@ tests/        单元测试与集成测试
 | `swings.left` | `5` | pivot 左半径（1~20，对应 Pine `left`） |
 | `fvg.mode` | `Super-Strict` | 对应 Pine `choice`：All FVG / Only FVG in the same direction of trend / Strict / Super-Strict |
 | `fvg.extend` | `true` | 对应 Pine `extend` |
+| `fvg.minGapBySymbol` | `{}` | 每币种 FVG 缺口阈值（绝对价格）：缺口 = `top − bottom`，仅当缺口 > 阈值才创建；未列出=0（不过滤） |
 | `targets.sessionOption` | `previous session (similar)` | 对应 Pine `opt`：previous session (any) / previous session (similar) |
 | `targets.keepLines` | `true` | 对应 Pine `keep`（仅 [super-]strict 模式生效） |
 | `data.symbol` | `BTCUSDT` | 批量引擎币种 |
@@ -301,6 +325,8 @@ export class OkxSource implements DataSource {
   intervalToMs(interval: string): number { /* ... */ }
   fetchKlines(req: KlineRequest): Promise<Kline[]> { /* ... */ }
   fetchTickSize(symbol: string): Promise<BigNumber> { /* ... */ }
+  // 可选：返回 symbol 的底层类型（用于股票代币非交易日抑制）；不实现则视为无此能力
+  fetchUnderlyingTypes?(symbols: string[]): Promise<Map<string, string | null>> { /* ... */ }
 }
 ```
 

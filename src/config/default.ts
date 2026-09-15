@@ -17,6 +17,7 @@ export const defaultConfig: Config = {
   fvg: {
     mode: 'Super-Strict',
     extend: true,
+    minGapBySymbol: {},
   },
   targets: {
     sessionOption: 'previous session (similar)',

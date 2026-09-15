@@ -40,17 +40,24 @@ interface FinCalDayStatus {
   close_time?: string | null // 半天日收盘（市场本地 HH:mm），否则 null
 }
 
+// 市场本地时区（localStatus 需按市场时区取日期，避免跨午夜的 off-by-one）
+const MARKET_TZ: Record<MarketMic, string> = {
+  XNYS: 'America/New_York',
+  XLON: 'Europe/London',
+}
+
 // 本地规则判定
 function localStatus(mic: MarketMic, now: DateTime): MarketStatus {
-  const day = getMarketDay(mic, now)
+  const zoned = now.setZone(MARKET_TZ[mic])
+  const day = getMarketDay(mic, zoned)
   if (day.isHoliday) {
     return { phase: 'holiday', openTime: null, closeTime: null, source: 'local' }
   }
   const openT = day.openTime.toFormat('HH:mm')
   const closeT = day.closeTime.toFormat('HH:mm')
-  const phase: MarketPhase = now < day.openTime
+  const phase: MarketPhase = zoned < day.openTime
     ? 'before-open'
-    : now < day.closeTime
+    : zoned < day.closeTime
       ? day.isEarlyClose ? 'open-early' : 'open'
       : day.isEarlyClose ? 'closed-early' : 'closed'
   return { phase, openTime: openT, closeTime: closeT, source: 'local' }

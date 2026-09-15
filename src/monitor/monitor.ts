@@ -1,7 +1,7 @@
 // 实时监控核心：多币种 WS 订阅 → 引擎增量 feedBar → killzone 收盘 FVG → Lark 加急通知
 
 import type { Config } from '../config/types.js'
-import { deriveConfig } from '../config/load.js'
+import { deriveConfig, minGapForSymbol } from '../config/load.js'
 import type { DataSource } from '../data/exchange.js'
 import type { Kline } from '../data/types.js'
 import { createHttpClient } from '../data/httpClient.js'
@@ -13,7 +13,7 @@ import { SessionScheduler } from './scheduler.js'
 import type { LarkClient } from './lark.js'
 import { createMarketStatusResolver, type MarketStatus } from '../market/marketCalendar.js'
 import type { MarketMic } from '../market/holidays.js'
-import type { DateTime } from 'luxon'
+import { DateTime } from 'luxon'
 
 // 会话 → 市场映射（LN=伦敦早盘、AM=纽约早盘、PM=纽约午盘）
 const MARKET_BY_SESSION: Record<'LN' | 'AM' | 'PM', { mic: MarketMic; name: string }> = {
@@ -22,11 +22,18 @@ const MARKET_BY_SESSION: Record<'LN' | 'AM' | 'PM', { mic: MarketMic; name: stri
   PM: { mic: 'XNYS', name: '纽约午盘' },
 }
 
+// Binance underlyingType → 交易日历市场；仅美股 EQUITY 参与休市抑制（黄金/加密照常通知）
+const UNDERLYING_MARKET: Record<string, MarketMic> = {
+  EQUITY: 'XNYS',
+}
+
 export interface MonitorContext {
   config: Config
   engines: Map<string, Engine>
   lastProcessed: Map<string, number>
   marketStatus?: (mic: MarketMic, now?: DateTime) => Promise<MarketStatus>
+  // symbol → 交易日历市场（仅 TradFi 股票代币有值；其余视为 24/7 不抑制）
+  symbolMarket?: Map<string, MarketMic>
 }
 
 // 解析某会话对应市场的开闭状态（失败返回 null，不阻断告警）
@@ -41,6 +48,20 @@ async function resolveMarketStatus(
   } catch (err) {
     getLogger().warn(`[市场] ${m.mic} 状态查询失败: ${(err as Error).message}`)
     return { mic: m.mic, name: m.name }
+  }
+}
+
+// 判定某 symbol 在其关联市场是否为非交易日（休市）。未映射（加密等）→ 永不抑制
+async function isSymbolMarketHoliday(ctx: MonitorContext, symbol: string, barTimeMs: number): Promise<boolean> {
+  const mic = ctx.symbolMarket?.get(symbol)
+  if (!mic || !ctx.marketStatus) return false
+  try {
+    const status = await ctx.marketStatus(mic, DateTime.fromMillis(barTimeMs))
+    return status.phase === 'holiday'
+  } catch (err) {
+    // 查询失败不阻断（fail-open：照常通知）
+    getLogger().warn(`[市场] ${symbol} ${mic} 休市判定失败: ${(err as Error).message}`)
+    return false
   }
 }
 
@@ -63,6 +84,11 @@ export async function handleClosedBar(
   const res = engine.feedBar(bar)
   const alerts: string[] = []
   if (res.inSb && res.createdFvgs.length > 0 && res.session) {
+    // 股票代币（TradFi EQUITY）在其市场休市日不推送（黄金/加密等未映射 symbol 不受影响）
+    if (await isSymbolMarketHoliday(ctx, symbol, res.time)) {
+      logger.info(`[监控] ${symbol} 非交易日（休市），跳过推送（${res.session} FVG）`)
+      return []
+    }
     const market = await resolveMarketStatus(ctx, res.session)
     for (const fvg of res.createdFvgs) {
       const grade = gradeFvg(res.trend, fvg.type, res.close, fvg.top, fvg.bottom)
@@ -170,10 +196,29 @@ export async function runMonitor(
   ctx.marketStatus = createMarketStatusResolver(config.market, createHttpClient(proxy))
   const unsubs: Array<() => void> = []
 
+  // 查询各 symbol 的底层类型 → 识别 TradFi 股票代币（EQUITY → XNYS），用于非交易日抑制通知
+  ctx.symbolMarket = new Map()
+  try {
+    const types = (await source.fetchUnderlyingTypes?.(config.monitor.symbols)) ?? new Map()
+    for (const symbol of config.monitor.symbols) {
+      const mic = types.get(symbol) ? UNDERLYING_MARKET[types.get(symbol)!] : undefined
+      if (mic) ctx.symbolMarket.set(symbol, mic)
+    }
+    if (ctx.symbolMarket.size > 0) {
+      logger.info(`[监控] TradFi 股票代币（非交易日抑制通知）：${[...ctx.symbolMarket.keys()].join(', ')}`)
+    }
+  } catch (err) {
+    // 识别失败不阻断监控（fail-open：不抑制任何通知）
+    logger.warn(`[监控] 查询 underlyingType 失败，跳过股票代币休市抑制: ${(err as Error).message}`)
+  }
+
   // 预热：每币种拉历史并 run（静默建状态；live 模式：不累积输出、按存活窗口剪枝 FVG）
   for (const symbol of config.monitor.symbols) {
     const tickSize = await source.fetchTickSize(symbol)
-    const engine = new Engine(deriveConfig(config, tickSize), symbol, interval, { live: true })
+    const engine = new Engine(deriveConfig(config, tickSize), symbol, interval, {
+      live: true,
+      minGap: minGapForSymbol(config, symbol),
+    })
     const end = Math.floor(Date.now() / intervalMs) * intervalMs
     const start = end - warmupMs
     const hist = await source.fetchKlines({ symbol, interval, startTime: start, endTime: end })

@@ -4,7 +4,8 @@
   },
   "fvg": {
     "mode": "Super-Strict",
-    "extend": true
+    "extend": true,
+    "minGapBySymbol": {}
   },
   "targets": {
     "sessionOption": "previous session (similar)",

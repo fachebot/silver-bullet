@@ -25,6 +25,9 @@ export interface SwingsConfig {
 export interface FvgConfig {
   mode: FvgMode
   extend: boolean
+  // 每币种 FVG 缺口阈值（绝对价格）：缺口 = box top - bottom，仅当缺口 > 阈值才创建该 FVG；
+  // 未列出的 symbol 视为 0（不过滤）
+  minGapBySymbol: Record<string, number>
 }
 
 // 目标支撑/阻力设置（对应 Pine: opt / keep）

@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest'
 import BigNumber from 'bignumber.js'
 import { defaultConfig } from '../src/config/default.js'
-import { deriveConfig } from '../src/config/load.js'
+import { deriveConfig, minGapForSymbol } from '../src/config/load.js'
 import { configSchema } from '../src/config/schema.js'
 import { loadConfigFile } from '../src/config/load.js'
 
@@ -13,6 +13,7 @@ describe('默认配置（与 Pine 默认值一致）', () => {
     expect(defaultConfig.swings.left).toBe(5)
     expect(defaultConfig.fvg.mode).toBe('Super-Strict')
     expect(defaultConfig.fvg.extend).toBe(true)
+    expect(defaultConfig.fvg.minGapBySymbol).toEqual({})
     expect(defaultConfig.targets.sessionOption).toBe('previous session (similar)')
     expect(defaultConfig.targets.keepLines).toBe(true)
   })
@@ -88,8 +89,27 @@ describe('zod schema 校验', () => {
     bad.sbSession = { show: true } // 已删除的旧键
     expect(() => configSchema.parse(bad)).toThrow()
   })
+  it('minGapBySymbol 接受每币种非负价格', () => {
+    const cfg = structuredClone(defaultConfig)
+    cfg.fvg.minGapBySymbol = { BTCUSDT: 50, ETHUSDT: 0 }
+    expect(() => configSchema.parse(cfg)).not.toThrow()
+  })
+  it('minGapBySymbol 负数报错', () => {
+    const bad = structuredClone(defaultConfig)
+    bad.fvg.minGapBySymbol = { BTCUSDT: -1 }
+    expect(() => configSchema.parse(bad)).toThrow()
+  })
   it('合法配置通过', () => {
     expect(() => configSchema.parse(defaultConfig)).not.toThrow()
+  })
+})
+
+describe('minGapForSymbol', () => {
+  it('命中返回配置值，未配置返回 0', () => {
+    const cfg = structuredClone(defaultConfig)
+    cfg.fvg.minGapBySymbol = { BTCUSDT: 50 }
+    expect(minGapForSymbol(cfg, 'BTCUSDT').toString()).toBe('50')
+    expect(minGapForSymbol(cfg, 'ETHUSDT').toString()).toBe('0')
   })
 })
 

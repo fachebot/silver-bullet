@@ -174,6 +174,49 @@ describe('引擎端到端（Super-Strict endSB 收盘过滤 → closed）', () =
   })
 })
 
+describe('Engine FVG 缺口阈值（minGap）', () => {
+  function eng(minGap: number) {
+    const config = structuredClone(defaultConfig)
+    config.fvg.mode = 'All FVG'
+    const cfg = deriveConfig(config, new BigNumber('0.01'))
+    return new Engine(cfg, 'TESTUSDT', '5m', { minGap: new BigNumber(minGap) })
+  }
+
+  // buildBars()（All FVG）在 bar8 建 bull FVG：gap = top(105) - bottom(102) = 3
+  function buildBearBars(): Kline[] {
+    const bars: Kline[] = []
+    for (let k = 0; k < 20; k++) {
+      let o = 100, h = 105, l = 95, c = 102
+      if (k === 6) { o = 100; h = 98; l = 95; c = 97 } // 会内：low[6]=95
+      if (k === 8) { o = 94; h = 92; l = 90; c = 91 } // bear FVG：high[8]=92 < low[6]=95 → gap = 95-92 = 3
+      bars.push(mkBar(T0 + k * M5, o, h, l, c))
+    }
+    return bars
+  }
+
+  it('阈值 0 → 不过滤', () => {
+    expect(eng(0).run(buildBars()).fvgs.find((f) => f.type === 'bull')).toBeDefined()
+  })
+
+  it('bull 缺口 > 阈值 → 创建', () => {
+    expect(eng(2).run(buildBars()).fvgs.find((f) => f.type === 'bull')).toBeDefined()
+  })
+
+  it('bull 缺口 ≤ 阈值 → 不创建', () => {
+    expect(eng(3).run(buildBars()).fvgs.find((f) => f.type === 'bull')).toBeUndefined()
+    expect(eng(10).run(buildBars()).fvgs.find((f) => f.type === 'bull')).toBeUndefined()
+  })
+
+  it('bear 缺口 > 阈值 → 创建；≤ 阈值 → 不创建', () => {
+    const bear = (minGap: number) =>
+      eng(minGap).run(buildBearBars()).fvgs.find((f) => f.type === 'bear')
+    expect(bear(2)).toBeDefined()
+    expect(bear(2)!.top.toNumber()).toBe(95)
+    expect(bear(2)!.bottom.toNumber()).toBe(92)
+    expect(bear(3)).toBeUndefined()
+  })
+})
+
 describe('Engine live 模式（监控长跑剪枝）', () => {
   const makeEngine = (live: boolean) => {
     const config = structuredClone(defaultConfig)

@@ -34,6 +34,8 @@ export const configSchema = z.object({
     .object({
       mode: fvgModeSchema,
       extend: z.boolean(),
+      // 每币种 FVG 缺口阈值（绝对价格，非负）
+      minGapBySymbol: z.record(z.string(), z.number().nonnegative()),
     })
     .strict(),
   targets: z

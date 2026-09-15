@@ -31,6 +31,9 @@ export interface DataSource {
   fetchRecentKlines(symbol: string, interval: string, limit: number): Promise<Kline[]>
   // 查询 symbol 的最小价格步进（mintick）
   fetchTickSize(symbol: string): Promise<BigNumber>
+  // 可选：查询 symbols 的底层类型（如 Binance 的 underlyingType：EQUITY/COMMODITY/COIN…），
+  // 用于判定 TradFi 代币（股票代币）在非交易日抑制通知。未实现则视为无此能力。
+  fetchUnderlyingTypes?(symbols: string[]): Promise<Map<string, string | null>>
   // 订阅多个 symbol 的已收盘 K 线（合并流，单连接，实时推送）
   // 重连成功后调用 onReconnect（用于补数），返回取消订阅函数
   subscribeClosedKlines(

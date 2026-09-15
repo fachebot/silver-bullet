@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
 import { DateTime } from 'luxon'
 
-import { loadConfigFile, deriveConfig } from './config/load.js'
+import { loadConfigFile, deriveConfig, minGapForSymbol } from './config/load.js'
 import { createDataSource } from './data/index.js'
 import { Engine } from './engine/engine.js'
 import { serialize } from './output/serialize.js'
@@ -48,7 +48,7 @@ async function main(): Promise<void> {
   }
 
   // 4. 运行引擎
-  const engine = new Engine(cfg, data.symbol, data.interval)
+  const engine = new Engine(cfg, data.symbol, data.interval, { minGap: minGapForSymbol(config, data.symbol) })
   const result = engine.run(bars)
   const serialized = serialize(result)
 

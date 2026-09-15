@@ -14,6 +14,7 @@ import type { Kline } from '../src/data/types.js'
 import { Engine } from '../src/engine/engine.js'
 import { deriveConfig } from '../src/config/load.js'
 import { defaultConfig } from '../src/config/default.js'
+import type { MarketStatus } from '../src/market/marketCalendar.js'
 
 const T0 = Date.UTC(2024, 6, 1, 6, 30) // 06:30 UTC（07:00 UTC = 03:00 NY = LN 会话开始）
 
@@ -248,6 +249,61 @@ describe('handleClosedBar（收盘处理）', () => {
     const res = await handleClosedBar(ctx, 'BTCUSDT', mkBar(T0, 104, 105, 103, 104.5), lark as never)
     expect(res).toHaveLength(0)
     expect(lark.texts).toHaveLength(0)
+  })
+})
+
+describe('handleClosedBar 股票代币休市抑制', () => {
+  function setup(): { ctx: MonitorContext; lark: { texts: string[]; notify: (t: string) => Promise<void> } } {
+    const config = structuredClone(defaultConfig)
+    config.fvg.mode = 'All FVG'
+    const cfg = deriveConfig(config, new BigNumber('0.1'))
+    const engine = new Engine(cfg, 'BTCUSDT', '5m')
+    for (let i = 0; i < 12; i++) {
+      engine.feedBar(mkBar(T0 + i * 300_000, 100.5, i === 10 ? 100 : 102, 99, 100.5))
+    }
+    const texts: string[] = []
+    const lark = { texts, async notify(t: string): Promise<void> { texts.push(t) } }
+    const ctx: MonitorContext = {
+      config,
+      engines: new Map([['BTCUSDT', engine]]),
+      lastProcessed: new Map([['BTCUSDT', T0 + 11 * 300_000]]),
+    }
+    return { ctx, lark }
+  }
+  // bar12（07:30 UTC = 03:30 NY，LN 内）收盘产生 bull FVG → 正常应告警
+  const bar12 = () => mkBar(T0 + 12 * 300_000, 104, 105, 103, 104.5)
+  const holiday: MarketStatus = { phase: 'holiday', openTime: null, closeTime: null, source: 'local' }
+  const open: MarketStatus = { phase: 'open', openTime: '09:30', closeTime: '16:00', source: 'local' }
+
+  it('EQUITY 代币在休市日 → 不生成/不推送告警', async () => {
+    const { ctx, lark } = setup()
+    ctx.symbolMarket = new Map([['BTCUSDT', 'XNYS']])
+    let calls = 0
+    ctx.marketStatus = async () => {
+      calls++
+      return holiday
+    }
+    const res = await handleClosedBar(ctx, 'BTCUSDT', bar12(), lark as never)
+    expect(res).toHaveLength(0)
+    expect(lark.texts).toHaveLength(0)
+    expect(calls).toBe(1) // 休市判定查询了市场状态
+  })
+
+  it('EQUITY 代币在交易日 → 正常告警', async () => {
+    const { ctx, lark } = setup()
+    ctx.symbolMarket = new Map([['BTCUSDT', 'XNYS']])
+    ctx.marketStatus = async () => open
+    const res = await handleClosedBar(ctx, 'BTCUSDT', bar12(), lark as never)
+    expect(res).toHaveLength(1)
+    expect(lark.texts).toHaveLength(1)
+  })
+
+  it('未映射 symbol（加密）即使市场休市 → 照常告警', async () => {
+    const { ctx, lark } = setup()
+    ctx.marketStatus = async () => holiday
+    const res = await handleClosedBar(ctx, 'BTCUSDT', bar12(), lark as never)
+    expect(res).toHaveLength(1)
+    expect(lark.texts).toHaveLength(1)
   })
 })
 

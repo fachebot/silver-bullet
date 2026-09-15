@@ -43,6 +43,8 @@ export const LIVE_MAX_FVG_AGE = 1000
 export interface EngineOptions {
   // live=true：增量监控模式。不累积 out.* 输出数组、不 finalize，并按 LIVE_MAX_FVG_AGE 剪枝 FVG
   live?: boolean
+  // FVG 缺口阈值（绝对价格）：缺口 = box top - bottom，仅当缺口 > minGap 才创建该 FVG；缺省 0 = 不过滤
+  minGap?: BigNumber
 }
 
 // 创建初始全局状态（对应 Pine 的 var 变量初始化）
@@ -92,6 +94,7 @@ function createEmptyOutput(symbol: string, interval: string): EngineOutput {
 export class Engine {
   private cfg: DerivedConfig
   private live: boolean
+  private minGap: BigNumber
   private state: EngineState
   private out: EngineOutput
   private fvgMap = new Map<number, FvgRecord>()
@@ -109,6 +112,7 @@ export class Engine {
   constructor(cfg: DerivedConfig, symbol: string, interval: string, opts: EngineOptions = {}) {
     this.cfg = cfg
     this.live = opts.live === true
+    this.minGap = opts.minGap ?? new BigNumber(0)
     this.state = createInitialState()
     this.out = createEmptyOutput(symbol, interval)
   }
@@ -502,6 +506,8 @@ export class Engine {
 
   // 创建 FVG 并登记输出记录
   private pushFvg(type: 'bull' | 'bear', box: Box, i: number, time: number): void {
+    // 缺口阈值过滤：缺口 = top - bottom，仅当 > minGap 才算有效缺口
+    if (this.minGap.gt(0) && box.top.minus(box.bottom).lte(this.minGap)) return
     const state = this.state
     const f: FVG = {
       box,
