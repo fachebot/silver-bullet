@@ -76,7 +76,7 @@ WS 断线自动重连（指数退避 1s→60s 封顶，`error` 也触发重连�
 
 ```jsonc
 "fvg": {
-  "mode": "Super-Strict",
+  "mode": "All FVG",
   "extend": true,
   "minGapBySymbol": { "BTCUSDT": 50, "ETHUSDT": 2 }   // 未列出的币种 = 0（不过滤）
 }
@@ -197,7 +197,7 @@ tests/        单元测试与集成测试
 | 配置项 | 默认值 | 说明 |
 |---|---|---|
 | `swings.left` | `5` | pivot 左半径（1~20，对应 Pine `left`） |
-| `fvg.mode` | `Super-Strict` | 对应 Pine `choice`：All FVG / Only FVG in the same direction of trend / Strict / Super-Strict |
+| `fvg.mode` | `All FVG` | 对应 Pine `choice`：All FVG / Only FVG in the same direction of trend / Strict / Super-Strict（Pine 默认为 `Super-Strict`，本项目默认 `All FVG`） |
 | `fvg.extend` | `true` | 对应 Pine `extend` |
 | `fvg.minGapBySymbol` | `{}` | 每币种 FVG 缺口阈值（绝对价格）：缺口 = `top − bottom`，仅当缺口 > 阈值才创建；未列出=0（不过滤） |
 | `targets.sessionOption` | `previous session (similar)` | 对应 Pine `opt`：previous session (any) / previous session (similar) |

@@ -1,10 +1,12 @@
 // 默认配置：与 Pine 指标 ict-silver-bullet.pine 中已使用的 input.* 默认值保持一致
 // 对照来源：
 //   left        = input.int(5, ...)
-//   choice      = input.string('Super-Strict', ...)
+//   choice      = input.string('Super-Strict', ...)   ← Pine 默认；本项目默认改为 'All FVG'
 //   extend      = input.bool(true, ...)
 //   opt         = input.string('previous session (similar)', ...)
 //   keep        = input.bool(true, ...)
+// 注：`fvg.mode` 默认 'All FVG'（与 config.json.sample 一致），使监控默认扫描全部 FVG；
+//     需要与 Pine 默认对齐时可显式设 'Super-Strict'。
 // 注：Pine 的 showSB / col_SB / cBullFVG / cBearFVG / cSupLine / cResLine / showT / showZZ
 //     均为画图/配色设置，本工程为纯数据/信号输出，不保留。
 
@@ -15,7 +17,7 @@ export const defaultConfig: Config = {
     left: 5,
   },
   fvg: {
-    mode: 'Super-Strict',
+    mode: 'All FVG',
     extend: true,
     minGapBySymbol: {},
   },

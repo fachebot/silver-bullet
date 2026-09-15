@@ -11,7 +11,7 @@ import { loadConfigFile } from '../src/config/load.js'
 describe('默认配置（与 Pine 默认值一致）', () => {
   it('关键默认值', () => {
     expect(defaultConfig.swings.left).toBe(5)
-    expect(defaultConfig.fvg.mode).toBe('Super-Strict')
+    expect(defaultConfig.fvg.mode).toBe('All FVG')
     expect(defaultConfig.fvg.extend).toBe(true)
     expect(defaultConfig.fvg.minGapBySymbol).toEqual({})
     expect(defaultConfig.targets.sessionOption).toBe('previous session (similar)')
@@ -117,6 +117,6 @@ describe('loadConfigFile', () => {
   it('加载 config.json 并合并默认值', () => {
     const cfg = loadConfigFile()
     expect(cfg.swings.left).toBe(5)
-    expect(cfg.fvg.mode).toBe('Super-Strict')
+    expect(cfg.fvg.mode).toBe('All FVG')
   })
 })
