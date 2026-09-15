@@ -3,7 +3,7 @@
     "left": 5
   },
   "fvg": {
-    "mode": "Super-Strict",
+    "mode": "All FVG",
     "extend": true,
     "minGapBySymbol": {}
   },
