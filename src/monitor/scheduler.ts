@@ -24,17 +24,21 @@ export const BOUNDARIES: Array<{ session: SessionKey; edge: SessionEdge; hour: n
   { session: 'PM', edge: 'end', hour: 15 },
 ]
 
+// 全部会话（默认启用集合）
+export const ALL_SESSIONS: SessionKey[] = ['LN', 'AM', 'PM']
+
 // 启动时允许补发的容差窗口：进程恰好在边界后一小段时间内启动（如 03:00:30）会补发该边界；
 // 早于（进程出生时刻 - 容差）就错过的边界视为"出生前就错过"，不补发
 export const CATCHUP_GRACE_MS = 60_000
 
-// 计算严格晚于 now 的最近一个边界
-export function nextBoundary(now: number = Date.now()): Boundary | null {
+// 计算严格晚于 now 的最近一个边界（仅考虑 sessions 内的会话）
+export function nextBoundary(now: number = Date.now(), sessions: SessionKey[] = ALL_SESSIONS): Boundary | null {
   const nowNY = DateTime.fromMillis(now, { zone: 'America/New_York' })
   let best: Boundary | null = null
   for (let dayOffset = 0; dayOffset <= 1; dayOffset++) {
     const day = nowNY.plus({ days: dayOffset }).startOf('day')
     for (const b of BOUNDARIES) {
+      if (!sessions.includes(b.session)) continue
       const ms = day.set({ hour: b.hour, minute: 0, second: 0, millisecond: 0 }).toMillis()
       if (ms > now && (!best || ms < best.timeMs)) {
         best = { session: b.session, edge: b.edge, timeMs: ms }
@@ -44,8 +48,8 @@ export function nextBoundary(now: number = Date.now()): Boundary | null {
   return best
 }
 
-// 枚举 (from, to] 之间的所有边界时刻（from 排除、to 包含），按时间升序
-export function boundariesBetween(from: number, to: number): Boundary[] {
+// 枚举 (from, to] 之间的所有边界时刻（from 排除、to 包含），按时间升序（仅考虑 sessions 内的会话）
+export function boundariesBetween(from: number, to: number, sessions: SessionKey[] = ALL_SESSIONS): Boundary[] {
   if (to <= from) return []
   const out: Boundary[] = []
   const fromNY = DateTime.fromMillis(from, { zone: 'America/New_York' })
@@ -55,6 +59,7 @@ export function boundariesBetween(from: number, to: number): Boundary[] {
     const day = day0.plus({ days: dayOffset })
     if (day.toMillis() > to) break
     for (const b of BOUNDARIES) {
+      if (!sessions.includes(b.session)) continue
       const ms = day.set({ hour: b.hour, minute: 0, second: 0, millisecond: 0 }).toMillis()
       if (ms > from && ms <= to) {
         out.push({ session: b.session, edge: b.edge, timeMs: ms })
@@ -70,7 +75,10 @@ export class SessionScheduler {
   private onBoundary: ((b: Boundary) => void) | null = null
   private stopped = false
 
-  constructor(private now: () => number = () => Date.now()) {}
+  constructor(
+    private now: () => number = () => Date.now(),
+    private sessions: SessionKey[] = ALL_SESSIONS,
+  ) {}
 
   // 启动：补发进程出生后错过的边界（容差 CATCHUP_GRACE_MS 内），随后逐边界 setTimeout 精确触发
   start(onBoundary: (b: Boundary) => void): void {
@@ -80,7 +88,7 @@ export class SessionScheduler {
     // 进程在整点后刚启动（如 03:00:30）→ 补发出生时刻之前最近 CATCHUP_GRACE_MS 内错过的边界
     // （fired 跨 start 保留，重复 start 不重复触发同一边界）
     const graceFrom = now - CATCHUP_GRACE_MS
-    for (const b of boundariesBetween(graceFrom, now)) {
+    for (const b of boundariesBetween(graceFrom, now, this.sessions)) {
       getLogger().info(`[会话] 补发错过的边界 ${b.session} ${b.edge}`)
       this.fire(b)
     }
@@ -97,7 +105,7 @@ export class SessionScheduler {
 
   private scheduleNext(): void {
     if (this.stopped) return
-    const next = nextBoundary(this.now())
+    const next = nextBoundary(this.now(), this.sessions)
     if (!next) return
     const delay = Math.max(next.timeMs - this.now(), 0)
     this.timer = setTimeout(() => {
@@ -123,7 +131,7 @@ export class SessionScheduler {
   private catchUpMissed(targetMs: number): void {
     const now = this.now()
     if (now <= targetMs) return
-    for (const b of boundariesBetween(targetMs, now)) {
+    for (const b of boundariesBetween(targetMs, now, this.sessions)) {
       if (!this.fired.has(b.timeMs)) {
         getLogger().info(`[会话] 补发休眠期间错过的边界 ${b.session} ${b.edge}`)
         this.fire(b)

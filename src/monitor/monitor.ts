@@ -79,6 +79,10 @@ export async function handleClosedBar(
   const res = engine.feedBar(bar)
   const alerts: string[] = []
   if (res.inSb && res.createdFvgs.length > 0 && res.session) {
+    // 仅监控配置的会话（monitor.sessions，默认仅 AM）；其余会话静默
+    if (!ctx.config.monitor.sessions.includes(res.session)) {
+      return []
+    }
     // 非美股交易日（NYSE 休市）全局静默：所有标的都不推送
     if (ctx.config.monitor.suppressOnNonUsTradingDays && (await isUsMarketHoliday(ctx, res.time))) {
       logger.info(`[监控] ${symbol} 非美股交易日（NYSE 休市），跳过推送（${res.session} FVG）`)
@@ -247,10 +251,10 @@ export async function runMonitor(
     `[监控] 已启动：WS=${config.monitor.useWebSocket ? '开' : '关'} 轮询=${config.monitor.pollSeconds > 0 ? config.monitor.pollSeconds + 's' : '关'}，等待 killzone 收盘 FVG...`,
   )
 
-  // 会话边界整点通知（全局一次，加急；附市场开闭状态）
+  // 会话边界整点通知（全局一次，加急；附市场开闭状态；仅配置的会话）
   let scheduler: SessionScheduler | null = null
   if (config.monitor.notifySessionBoundary) {
-    scheduler = new SessionScheduler()
+    scheduler = new SessionScheduler(undefined, config.monitor.sessions)
     scheduler.start((b) => {
       void (async () => {
         // 非美股交易日全局静默：会话边界也跳过

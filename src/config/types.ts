@@ -13,6 +13,9 @@ export type FvgMode =
 // 目标会话选项（对应 Pine 的 opt 选项）
 export type TargetOption = 'previous session (any)' | 'previous session (similar)'
 
+// 监控通知生效的 Silver Bullet 会话（仅通知层过滤，引擎仍计算三会话）
+export type MonitorSession = 'LN' | 'AM' | 'PM'
+
 // 品种类型（对应 Pine 的 syminfo.type，用于计算 minimum_trade_framework）
 export type SyminfoType = 'stock' | 'futures' | 'index' | 'forex' | 'crypto' | 'fund'
 
@@ -67,6 +70,7 @@ export interface MonitorConfig {
   useWebSocket: boolean // 是否订阅 WS（fstream 可能被网络封锁，可关）
   notifySessionBoundary: boolean // 会话开始/结束时 Lark 加急通知（整点）
   suppressOnNonUsTradingDays: boolean // 非美股交易日（NYSE 休市）时所有标的与会话边界均不推送
+  sessions: MonitorSession[] // 仅这些会话产生 FVG 告警与会话边界通知（默认仅 AM）
   lark: LarkMonitorConfig
 }
 

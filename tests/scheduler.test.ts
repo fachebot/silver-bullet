@@ -54,6 +54,14 @@ describe('nextBoundary', () => {
     expect(b2.session).toBe('AM')
     expect(b2.edge).toBe('end')
   })
+
+  it('仅 AM（sessions=[AM]）→ 跳过 LN/PM，最近边界为 AM start', () => {
+    const now = nyMs(2024, 6, 1, 2, 30)
+    const b = nextBoundary(now, ['AM'])!
+    expect(b.session).toBe('AM')
+    expect(b.edge).toBe('start')
+    expect(b.timeMs).toBe(nyMs(2024, 6, 1, 10, 0))
+  })
 })
 
 describe('boundariesBetween', () => {
@@ -82,6 +90,13 @@ describe('boundariesBetween', () => {
 
   it('to ≤ from → 空', () => {
     expect(boundariesBetween(1000, 1000)).toEqual([])
+  })
+
+  it('仅 AM（sessions=[AM]）→ 过滤掉 LN/PM 边界', () => {
+    const from = nyMs(2024, 6, 1, 2, 0)
+    const to = nyMs(2024, 6, 1, 15, 30)
+    const bs = boundariesBetween(from, to, ['AM'])
+    expect(bs.map((b) => `${b.session}:${b.edge}`)).toEqual(['AM:start', 'AM:end'])
   })
 })
 
@@ -117,6 +132,13 @@ describe('SessionScheduler', () => {
     sched.start((b) => fired.push(`${b.session}:${b.edge}`))
     sched.start((b) => fired.push(`${b.session}:${b.edge}`)) // 重复 start 不应重复触发同一边界
     expect(fired.filter((x) => x === 'LN:start')).toHaveLength(1)
+  })
+
+  it('仅 AM（sessions=[AM]）→ 补发也只含 AM', () => {
+    const start = nyMs(2024, 6, 1, 10, 0) + 30_000
+    sched = new SessionScheduler(() => start, ['AM'])
+    sched.start((b) => fired.push(`${b.session}:${b.edge}`))
+    expect(fired).toEqual(['AM:start'])
   })
 
   it('休眠错过 03:00/04:00 → timer 漂移恢复后按序补发中间错过的边界', async () => {

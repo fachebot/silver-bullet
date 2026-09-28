@@ -67,6 +67,7 @@ export const configSchema = z.object({
       useWebSocket: z.boolean(),
       notifySessionBoundary: z.boolean(),
       suppressOnNonUsTradingDays: z.boolean(),
+      sessions: z.array(z.enum(['LN', 'AM', 'PM'])).min(1),
       lark: z
         .object({
           appId: z.string(),

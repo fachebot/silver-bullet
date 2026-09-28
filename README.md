@@ -44,6 +44,8 @@ WS 断线自动重连（指数退避 1s→60s 封顶，`error` 也触发重连�
 
 ### Killzone FVG 告警
 
+仅在 `monitor.sessions` 列出的会话产生告警（**默认 `["AM"]`，即只交易纽约早盘**；LN/PM 完全静默）。引擎本身仍按 `fvg.mode` 计算全部三会话（不影响批量 `npm start` 输出），监控只在通知层过滤。
+
 引擎按 `config.json` 的 `fvg.mode` 创建 FVG（`Super-Strict`/`Strict`/`Only FVG in the same direction of trend` 只创建与趋势同向的 FVG；`All FVG` 双向都创建），再对每个新 FVG 按**收盘动量分位**分级，用 ⭐ 表示：
 
 | 条件 | 星级 | 标签 |
@@ -61,8 +63,8 @@ WS 断线自动重连（指数退避 1s→60s 封顶，`error` 也触发重连�
 
 ```
 🚨 KILLZONE FVG · BTCUSDT
-会话：LN（03-04 NY）
-时间：2026-09-07 15:35（北京）
+会话：AM（10-11 NY）
+时间：2026-09-07 22:35（北京）
 现价：64310.4
 方向：看涨 FVG
 范围：64281.4 ~ 64310.4
@@ -96,12 +98,12 @@ WS 断线自动重连（指数退避 1s→60s 封顶，`error` 也触发重连�
 
 ### 会话边界通知
 
-`monitor.notifySessionBoundary`（默认开）在 **America/New_York 整点**精确通知 LN/AM/PM 会话开始与结束（每边界一次、全局加急）：
+`monitor.notifySessionBoundary`（默认开）在 **America/New_York 整点**精确通知**已启用会话**（`monitor.sessions`，默认仅 AM）的开始与结束（每边界一次、全局加急）：
 
 ```
-🔔 LN 会话开始 LN（03-04 NY）
+🔔 AM 会话开始 AM（10-11 NY）
 时间：2026-09-07 15:00（北京）
-伦敦盘：当前已开盘
+纽约早盘：当前已开盘
 ```
 
 ### 市场开闭状态
@@ -216,6 +218,7 @@ tests/        单元测试与集成测试
 | `monitor.useWebSocket` | `true` | 是否订阅 WS（fstream 可能被网络封锁，可关） |
 | `monitor.notifySessionBoundary` | `true` | 会话开始/结束时 Lark 加急通知（NY 整点） |
 | `monitor.suppressOnNonUsTradingDays` | `true` | 非美股交易日（NYSE 休市）时所有标的与会话边界均不推送 |
+| `monitor.sessions` | `["AM"]` | 仅这些会话产生 FVG 告警与会话边界通知（可含 `"LN"`/`"AM"`/`"PM"`；默认仅纽约早盘） |
 | `monitor.lark.*` | — | Lark 应用加急配置（见"实时监控"） |
 | `market.statusApiBase` | `https://fincalapi.com` | FinCal API 地址 |
 | `market.apiKey` | `` | FinCal API key（`fincal_live_...`，免费注册 fincalapi.com） |

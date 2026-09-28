@@ -45,6 +45,7 @@ export const defaultConfig: Config = {
     useWebSocket: true,
     notifySessionBoundary: true,
     suppressOnNonUsTradingDays: true,
+    sessions: ['AM'],
     lark: {
       appId: '',
       appSecret: '',

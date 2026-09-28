@@ -16,6 +16,7 @@ describe('默认配置（与 Pine 默认值一致）', () => {
     expect(defaultConfig.fvg.minGapBySymbol).toEqual({})
     expect(defaultConfig.targets.sessionOption).toBe('previous session (similar)')
     expect(defaultConfig.targets.keepLines).toBe(true)
+    expect(defaultConfig.monitor.sessions).toEqual(['AM'])
   })
 })
 
@@ -97,6 +98,19 @@ describe('zod schema 校验', () => {
   it('minGapBySymbol 负数报错', () => {
     const bad = structuredClone(defaultConfig)
     bad.fvg.minGapBySymbol = { BTCUSDT: -1 }
+    expect(() => configSchema.parse(bad)).toThrow()
+  })
+  it('monitor.sessions 接受合法会话集合', () => {
+    const ok = structuredClone(defaultConfig)
+    ok.monitor.sessions = ['AM', 'PM']
+    expect(() => configSchema.parse(ok)).not.toThrow()
+  })
+  it('monitor.sessions 空数组或非法会话报错', () => {
+    const empty = structuredClone(defaultConfig)
+    empty.monitor.sessions = []
+    expect(() => configSchema.parse(empty)).toThrow()
+    const bad = structuredClone(defaultConfig)
+    bad.monitor.sessions = ['XX'] as never
     expect(() => configSchema.parse(bad)).toThrow()
   })
   it('合法配置通过', () => {

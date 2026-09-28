@@ -209,6 +209,7 @@ describe('handleClosedBar（收盘处理）', () => {
   function setup(): { ctx: MonitorContext; lark: { texts: string[]; notify: (t: string) => Promise<void> } } {
     const config = structuredClone(defaultConfig)
     config.fvg.mode = 'All FVG' // 监控用 All FVG 模式
+    config.monitor.sessions = ['LN', 'AM', 'PM'] // 本组用例针对通用告警路径，保留三会话
     const cfg = deriveConfig(config, new BigNumber('0.1'))
     const engine = new Engine(cfg, 'BTCUSDT', '5m')
 
@@ -270,6 +271,7 @@ describe('非美股交易日不推送（全局门控）', () => {
   function setup(suppress = true): { ctx: MonitorContext; lark: { texts: string[]; notify: (t: string) => Promise<void> } } {
     const config = structuredClone(defaultConfig)
     config.fvg.mode = 'All FVG'
+    config.monitor.sessions = ['LN', 'AM', 'PM']
     config.monitor.suppressOnNonUsTradingDays = suppress
     const cfg = deriveConfig(config, new BigNumber('0.1'))
     const engine = new Engine(cfg, 'BTCUSDT', '5m')
@@ -359,6 +361,51 @@ describe('isUsMarketHoliday', () => {
   })
 })
 
+describe('会话过滤（monitor.sessions）', () => {
+  function setup(sessions: Array<'LN' | 'AM' | 'PM'>) {
+    const config = structuredClone(defaultConfig)
+    config.fvg.mode = 'All FVG'
+    config.monitor.sessions = sessions
+    const cfg = deriveConfig(config, new BigNumber('0.1'))
+    const engine = new Engine(cfg, 'BTCUSDT', '5m')
+    for (let i = 0; i < 12; i++) {
+      engine.feedBar(mkBar(T0 + i * 300_000, 100.5, i === 10 ? 100 : 102, 99, 100.5))
+    }
+    const texts: string[] = []
+    const lark = { texts, async notify(t: string): Promise<void> { texts.push(t) } }
+    const ctx: MonitorContext = {
+      config,
+      engines: new Map([['BTCUSDT', engine]]),
+      lastProcessed: new Map(),
+    }
+    return { ctx, lark }
+  }
+  // LN bar：07:30 UTC = 03:30 NY；AM bar：14:05 UTC = 10:05 NY（EDT）。两者均 low=103 > high[10]=100 → bull FVG
+  const LN_T = T0 + 12 * 300_000
+  const AM_T = Date.UTC(2024, 6, 1, 14, 5)
+
+  it("sessions=['AM']：LN 不告警、AM 告警", async () => {
+    const ln = setup(['AM'])
+    expect(await handleClosedBar(ln.ctx, 'BTCUSDT', mkBar(LN_T, 104, 105, 103, 104.5), ln.lark as never)).toHaveLength(0)
+    expect(ln.lark.texts).toHaveLength(0)
+
+    const am = setup(['AM'])
+    const res = await handleClosedBar(am.ctx, 'BTCUSDT', mkBar(AM_T, 104, 105, 103, 104.5), am.lark as never)
+    expect(res).toHaveLength(1)
+    expect(res[0]).toContain('AM（10-11 NY）')
+  })
+
+  it("sessions=['LN']：AM 不告警、LN 告警", async () => {
+    const am = setup(['LN'])
+    expect(await handleClosedBar(am.ctx, 'BTCUSDT', mkBar(AM_T, 104, 105, 103, 104.5), am.lark as never)).toHaveLength(0)
+
+    const ln = setup(['LN'])
+    const res = await handleClosedBar(ln.ctx, 'BTCUSDT', mkBar(LN_T, 104, 105, 103, 104.5), ln.lark as never)
+    expect(res).toHaveLength(1)
+    expect(res[0]).toContain('LN（03-04 NY）')
+  })
+})
+
 describe('catchUpAfterReconnect（断线补数）', () => {
   class MockSource implements DataSource {
     readonly name = 'mock'
@@ -383,6 +430,7 @@ describe('catchUpAfterReconnect（断线补数）', () => {
   function setup(): { ctx: MonitorContext; lark: { texts: string[]; notify: (t: string) => Promise<void> }; source: MockSource } {
     const config = structuredClone(defaultConfig)
     config.fvg.mode = 'All FVG'
+    config.monitor.sessions = ['LN', 'AM', 'PM']
     const cfg = deriveConfig(config, new BigNumber('0.1'))
     const engine = new Engine(cfg, 'BTCUSDT', '5m')
     for (let i = 0; i < 12; i++) {
@@ -459,6 +507,7 @@ describe('pollForNewBars（REST 轮询兜底）', () => {
   function setup(): { ctx: MonitorContext; lark: { texts: string[]; notify: (t: string) => Promise<void> }; source: MockSource } {
     const config = structuredClone(defaultConfig)
     config.fvg.mode = 'All FVG'
+    config.monitor.sessions = ['LN', 'AM', 'PM']
     const cfg = deriveConfig(config, new BigNumber('0.1'))
     const engine = new Engine(cfg, 'BTCUSDT', '5m')
     for (let i = 0; i < 12; i++) {
