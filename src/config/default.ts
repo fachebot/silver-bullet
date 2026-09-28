@@ -44,6 +44,7 @@ export const defaultConfig: Config = {
     pollSeconds: 5,
     useWebSocket: true,
     notifySessionBoundary: true,
+    suppressOnNonUsTradingDays: true,
     lark: {
       appId: '',
       appSecret: '',

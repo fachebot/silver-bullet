@@ -84,14 +84,15 @@ WS 断线自动重连（指数退避 1s→60s 封顶，`error` 也触发重连�
 
 > 阈值为绝对价格，币价长期大幅变动后需相应调整。
 
-### 股票代币非交易日不推送
+### 非美股交易日不推送（全局静默）
 
-对于 **Binance TradFi 股票代币**（`exchangeInfo.underlyingType = EQUITY`，如 `TSLAUSDT`、`AAPLUSDT`），监控会在其对应市场（**NYSE**）的**非交易日（周末/美股法定假日）**跳过 FVG 告警推送，避免休市日噪声。判定按 `market` 交易日历（FinCal API + 本地降级）。启动时会自动查询各 symbol 的 `underlyingType` 并记录日志。
+`monitor.suppressOnNonUsTradingDays`（默认 `true`）开启时：以 **NYSE（`XNYS`）** 交易日历为准，**非美股交易日（周末/美股法定假日）当天，所有标的的 FVG 告警与会话边界通知一律不推送**（含加密货币/黄金等）。判定按 `market` 交易日历（FinCal API + 本地降级）。
 
-- **黄金等其他 TradFi 代币**（如 `XAUUSDT`，`underlyingType=COMMODITY`）与**加密货币**（`COIN`）**不受影响**，24/7 照常推送。
-- **会话边界通知**为全局通知，**不受此规则影响**，始终发送。
-- 股票类别仅识别 `EQUITY`；`HK/KR/CN_EQUITY`、`PREMARKET` 暂等同于加密货币（不抑制）。
-- 识别或市场状态查询失败时**降级为照常推送**（fail-open），不会漏报。
+- **半天日**算美股交易日，**正常推送**。
+- 判定按 **bar 时间 / 边界时刻** 所属的 NYSE 日；补数回放历史 bar 时按该 bar 当日判定。
+- **会话边界通知**在美股休市日**一并跳过**。
+- 市场状态查询失败时 **fail-open**（视为交易日、照常推送），不会漏报。
+- 设为 `false` 可关闭该门控（恢复 24/7 推送）。
 
 ### 会话边界通知
 
@@ -214,6 +215,7 @@ tests/        单元测试与集成测试
 | `monitor.pollSeconds` | `5` | REST 轮询兜底间隔（秒），0 = 关闭 |
 | `monitor.useWebSocket` | `true` | 是否订阅 WS（fstream 可能被网络封锁，可关） |
 | `monitor.notifySessionBoundary` | `true` | 会话开始/结束时 Lark 加急通知（NY 整点） |
+| `monitor.suppressOnNonUsTradingDays` | `true` | 非美股交易日（NYSE 休市）时所有标的与会话边界均不推送 |
 | `monitor.lark.*` | — | Lark 应用加急配置（见"实时监控"） |
 | `market.statusApiBase` | `https://fincalapi.com` | FinCal API 地址 |
 | `market.apiKey` | `` | FinCal API key（`fincal_live_...`，免费注册 fincalapi.com） |
@@ -329,8 +331,6 @@ export class OkxSource implements DataSource {
   intervalToMs(interval: string): number { /* ... */ }
   fetchKlines(req: KlineRequest): Promise<Kline[]> { /* ... */ }
   fetchTickSize(symbol: string): Promise<BigNumber> { /* ... */ }
-  // 可选：返回 symbol 的底层类型（用于股票代币非交易日抑制）；不实现则视为无此能力
-  fetchUnderlyingTypes?(symbols: string[]): Promise<Map<string, string | null>> { /* ... */ }
 }
 ```
 

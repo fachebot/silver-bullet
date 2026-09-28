@@ -6,7 +6,7 @@ import BigNumber from 'bignumber.js'
 import { gradeFvg } from '../src/monitor/grade.js'
 import { formatFvgAlert } from '../src/monitor/format.js'
 import { LarkClient, type LarkConfig } from '../src/monitor/lark.js'
-import { handleClosedBar, catchUpAfterReconnect, pollForNewBars, type MonitorContext } from '../src/monitor/monitor.js'
+import { handleClosedBar, catchUpAfterReconnect, pollForNewBars, isUsMarketHoliday, type MonitorContext } from '../src/monitor/monitor.js'
 import { parseKlineMessage, parseKlineUpdate, shouldForceReconnect, STALE_STREAM_MS } from '../src/data/binance.js'
 import type { HttpClient } from '../src/data/httpClient.js'
 import type { DataSource, KlineRequest } from '../src/data/exchange.js'
@@ -263,10 +263,14 @@ describe('handleClosedBar（收盘处理）', () => {
   })
 })
 
-describe('handleClosedBar 股票代币休市抑制', () => {
-  function setup(): { ctx: MonitorContext; lark: { texts: string[]; notify: (t: string) => Promise<void> } } {
+describe('非美股交易日不推送（全局门控）', () => {
+  const holiday: MarketStatus = { phase: 'holiday', openTime: null, closeTime: null, source: 'local' }
+  const open: MarketStatus = { phase: 'open', openTime: '09:30', closeTime: '16:00', source: 'local' }
+
+  function setup(suppress = true): { ctx: MonitorContext; lark: { texts: string[]; notify: (t: string) => Promise<void> } } {
     const config = structuredClone(defaultConfig)
     config.fvg.mode = 'All FVG'
+    config.monitor.suppressOnNonUsTradingDays = suppress
     const cfg = deriveConfig(config, new BigNumber('0.1'))
     const engine = new Engine(cfg, 'BTCUSDT', '5m')
     for (let i = 0; i < 12; i++) {
@@ -283,12 +287,9 @@ describe('handleClosedBar 股票代币休市抑制', () => {
   }
   // bar12（07:30 UTC = 03:30 NY，LN 内）收盘产生 bull FVG → 正常应告警
   const bar12 = () => mkBar(T0 + 12 * 300_000, 104, 105, 103, 104.5)
-  const holiday: MarketStatus = { phase: 'holiday', openTime: null, closeTime: null, source: 'local' }
-  const open: MarketStatus = { phase: 'open', openTime: '09:30', closeTime: '16:00', source: 'local' }
 
-  it('EQUITY 代币在休市日 → 不生成/不推送告警', async () => {
+  it('NYSE 休市日 → 任意标的都不生成/不推送告警', async () => {
     const { ctx, lark } = setup()
-    ctx.symbolMarket = new Map([['BTCUSDT', 'XNYS']])
     let calls = 0
     ctx.marketStatus = async () => {
       calls++
@@ -297,24 +298,64 @@ describe('handleClosedBar 股票代币休市抑制', () => {
     const res = await handleClosedBar(ctx, 'BTCUSDT', bar12(), lark as never)
     expect(res).toHaveLength(0)
     expect(lark.texts).toHaveLength(0)
-    expect(calls).toBe(1) // 休市判定查询了市场状态
+    expect(calls).toBe(1) // 查询了 NYSE 状态
   })
 
-  it('EQUITY 代币在交易日 → 正常告警', async () => {
+  it('NYSE 交易日 → 正常告警', async () => {
     const { ctx, lark } = setup()
-    ctx.symbolMarket = new Map([['BTCUSDT', 'XNYS']])
     ctx.marketStatus = async () => open
     const res = await handleClosedBar(ctx, 'BTCUSDT', bar12(), lark as never)
     expect(res).toHaveLength(1)
     expect(lark.texts).toHaveLength(1)
   })
 
-  it('未映射 symbol（加密）即使市场休市 → 照常告警', async () => {
-    const { ctx, lark } = setup()
+  it('开关关闭时 → 即使 NYSE 休市也照常告警', async () => {
+    const { ctx, lark } = setup(false)
     ctx.marketStatus = async () => holiday
     const res = await handleClosedBar(ctx, 'BTCUSDT', bar12(), lark as never)
     expect(res).toHaveLength(1)
     expect(lark.texts).toHaveLength(1)
+  })
+
+  it('市场状态查询抛错 → fail-open 照常告警', async () => {
+    const { ctx, lark } = setup()
+    ctx.marketStatus = async () => {
+      throw new Error('down')
+    }
+    const res = await handleClosedBar(ctx, 'BTCUSDT', bar12(), lark as never)
+    expect(res).toHaveLength(1)
+    expect(lark.texts).toHaveLength(1)
+  })
+})
+
+describe('isUsMarketHoliday', () => {
+  const holiday: MarketStatus = { phase: 'holiday', openTime: null, closeTime: null, source: 'local' }
+  const open: MarketStatus = { phase: 'open', openTime: '09:30', closeTime: '16:00', source: 'local' }
+  const base: MonitorContext = {
+    config: structuredClone(defaultConfig),
+    engines: new Map(),
+    lastProcessed: new Map(),
+  }
+
+  it('按 XNYS 判定：holiday → true，open → false', async () => {
+    let mic = ''
+    const holidayFn = async (m: string) => {
+      mic = m
+      return holiday
+    }
+    expect(await isUsMarketHoliday({ ...base, marketStatus: holidayFn as never }, 0)).toBe(true)
+    expect(mic).toBe('XNYS')
+    expect(await isUsMarketHoliday({ ...base, marketStatus: (async () => open) as never }, 0)).toBe(false)
+  })
+
+  it('查询抛错或无 marketStatus → false（fail-open）', async () => {
+    expect(
+      await isUsMarketHoliday(
+        { ...base, marketStatus: (async () => { throw new Error('x') }) as never },
+        0,
+      ),
+    ).toBe(false)
+    expect(await isUsMarketHoliday(base, 0)).toBe(false)
   })
 })
 

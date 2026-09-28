@@ -66,6 +66,7 @@ export interface MonitorConfig {
   pollSeconds: number // REST 轮询间隔（秒），0 = 关闭（WS 兜底）
   useWebSocket: boolean // 是否订阅 WS（fstream 可能被网络封锁，可关）
   notifySessionBoundary: boolean // 会话开始/结束时 Lark 加急通知（整点）
+  suppressOnNonUsTradingDays: boolean // 非美股交易日（NYSE 休市）时所有标的与会话边界均不推送
   lark: LarkMonitorConfig
 }
 

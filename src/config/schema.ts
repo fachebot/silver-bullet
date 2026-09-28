@@ -66,6 +66,7 @@ export const configSchema = z.object({
       pollSeconds: z.number().int().min(0), // 0 = 关闭 REST 轮询兜底
       useWebSocket: z.boolean(),
       notifySessionBoundary: z.boolean(),
+      suppressOnNonUsTradingDays: z.boolean(),
       lark: z
         .object({
           appId: z.string(),

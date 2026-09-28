@@ -222,7 +222,7 @@ describe('fetchKlines 完整性（注入假 http，不落脏缓存）', () => {
   })
 })
 
-describe('BinanceSource.fetchUnderlyingTypes（股票代币识别）', () => {
+describe('BinanceSource.fetchTickSize（全量 exchangeInfo 中查找）', () => {
   function makeSource(symbols: unknown[]): BinanceSource {
     const http: HttpClient = {
       async getJson() {
@@ -235,29 +235,17 @@ describe('BinanceSource.fetchUnderlyingTypes（股票代币识别）', () => {
     return new BinanceSource({ http })
   }
 
-  it('解析 underlyingType；未找到的 symbol 补 null', async () => {
-    const src = makeSource([
-      { symbol: 'BTCUSDT', underlyingType: 'COIN' },
-      { symbol: 'TSLAUSDT', underlyingType: 'EQUITY' },
-      { symbol: 'XAUUSDT', underlyingType: 'COMMODITY' },
-      { symbol: 'NOFILTER' },
-    ])
-    const m = await src.fetchUnderlyingTypes(['BTCUSDT', 'TSLAUSDT', 'XAUUSDT', 'NOFILTER', 'MISSINGUSDT'])
-    expect(m.get('BTCUSDT')).toBe('COIN')
-    expect(m.get('TSLAUSDT')).toBe('EQUITY')
-    expect(m.get('XAUUSDT')).toBe('COMMODITY')
-    expect(m.has('NOFILTER')).toBe(true)
-    expect(m.get('NOFILTER')).toBeNull()
-    expect(m.has('MISSINGUSDT')).toBe(true)
-    expect(m.get('MISSINGUSDT')).toBeNull()
-  })
-
-  it('fetchTickSize 仍能全量列表中查找', async () => {
+  it('从全量列表中匹配 symbol 并返回 tickSize', async () => {
     const src = makeSource([
       { symbol: 'OTHERUSDT', filters: [{ filterType: 'PRICE_FILTER', tickSize: '1' }] },
       { symbol: 'BTCUSDT', filters: [{ filterType: 'PRICE_FILTER', tickSize: '0.10' }] },
     ])
     expect((await src.fetchTickSize('BTCUSDT')).toString()).toBe('0.1')
+  })
+
+  it('找不到 symbol 抛错', async () => {
+    const src = makeSource([{ symbol: 'BTCUSDT', filters: [{ filterType: 'PRICE_FILTER', tickSize: '0.1' }] }])
+    await expect(src.fetchTickSize('NOPEUSDT')).rejects.toThrow(/找不到 symbol/)
   })
 })
 

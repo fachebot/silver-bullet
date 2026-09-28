@@ -22,18 +22,14 @@ const MARKET_BY_SESSION: Record<'LN' | 'AM' | 'PM', { mic: MarketMic; name: stri
   PM: { mic: 'XNYS', name: '纽约午盘' },
 }
 
-// Binance underlyingType → 交易日历市场；仅美股 EQUITY 参与休市抑制（黄金/加密照常通知）
-const UNDERLYING_MARKET: Record<string, MarketMic> = {
-  EQUITY: 'XNYS',
-}
+// 非美股交易日门控所依据的市场（NYSE）
+const US_MARKET: MarketMic = 'XNYS'
 
 export interface MonitorContext {
   config: Config
   engines: Map<string, Engine>
   lastProcessed: Map<string, number>
   marketStatus?: (mic: MarketMic, now?: DateTime) => Promise<MarketStatus>
-  // symbol → 交易日历市场（仅 TradFi 股票代币有值；其余视为 24/7 不抑制）
-  symbolMarket?: Map<string, MarketMic>
 }
 
 // 解析某会话对应市场的开闭状态（失败返回 null，不阻断告警）
@@ -51,16 +47,15 @@ async function resolveMarketStatus(
   }
 }
 
-// 判定某 symbol 在其关联市场是否为非交易日（休市）。未映射（加密等）→ 永不抑制
-async function isSymbolMarketHoliday(ctx: MonitorContext, symbol: string, barTimeMs: number): Promise<boolean> {
-  const mic = ctx.symbolMarket?.get(symbol)
-  if (!mic || !ctx.marketStatus) return false
+// 判定给定时刻是否为非美股交易日（NYSE 休市：周末/全天假日）。半天日算交易日。
+// 查询失败不阻断（fail-open：视为交易日，照常通知）
+export async function isUsMarketHoliday(ctx: MonitorContext, timeMs: number): Promise<boolean> {
+  if (!ctx.marketStatus) return false
   try {
-    const status = await ctx.marketStatus(mic, DateTime.fromMillis(barTimeMs))
+    const status = await ctx.marketStatus(US_MARKET, DateTime.fromMillis(timeMs))
     return status.phase === 'holiday'
   } catch (err) {
-    // 查询失败不阻断（fail-open：照常通知）
-    getLogger().warn(`[市场] ${symbol} ${mic} 休市判定失败: ${(err as Error).message}`)
+    getLogger().warn(`[市场] ${US_MARKET} 休市判定失败: ${(err as Error).message}`)
     return false
   }
 }
@@ -84,9 +79,9 @@ export async function handleClosedBar(
   const res = engine.feedBar(bar)
   const alerts: string[] = []
   if (res.inSb && res.createdFvgs.length > 0 && res.session) {
-    // 股票代币（TradFi EQUITY）在其市场休市日不推送（黄金/加密等未映射 symbol 不受影响）
-    if (await isSymbolMarketHoliday(ctx, symbol, res.time)) {
-      logger.info(`[监控] ${symbol} 非交易日（休市），跳过推送（${res.session} FVG）`)
+    // 非美股交易日（NYSE 休市）全局静默：所有标的都不推送
+    if (ctx.config.monitor.suppressOnNonUsTradingDays && (await isUsMarketHoliday(ctx, res.time))) {
+      logger.info(`[监控] ${symbol} 非美股交易日（NYSE 休市），跳过推送（${res.session} FVG）`)
       return []
     }
     const market = await resolveMarketStatus(ctx, res.session)
@@ -196,22 +191,6 @@ export async function runMonitor(
   ctx.marketStatus = createMarketStatusResolver(config.market, createHttpClient(proxy))
   const unsubs: Array<() => void> = []
 
-  // 查询各 symbol 的底层类型 → 识别 TradFi 股票代币（EQUITY → XNYS），用于非交易日抑制通知
-  ctx.symbolMarket = new Map()
-  try {
-    const types = (await source.fetchUnderlyingTypes?.(config.monitor.symbols)) ?? new Map()
-    for (const symbol of config.monitor.symbols) {
-      const mic = types.get(symbol) ? UNDERLYING_MARKET[types.get(symbol)!] : undefined
-      if (mic) ctx.symbolMarket.set(symbol, mic)
-    }
-    if (ctx.symbolMarket.size > 0) {
-      logger.info(`[监控] TradFi 股票代币（非交易日抑制通知）：${[...ctx.symbolMarket.keys()].join(', ')}`)
-    }
-  } catch (err) {
-    // 识别失败不阻断监控（fail-open：不抑制任何通知）
-    logger.warn(`[监控] 查询 underlyingType 失败，跳过股票代币休市抑制: ${(err as Error).message}`)
-  }
-
   // 预热：每币种拉历史并 run（静默建状态；live 模式：不累积输出、按存活窗口剪枝 FVG）
   for (const symbol of config.monitor.symbols) {
     const tickSize = await source.fetchTickSize(symbol)
@@ -274,6 +253,11 @@ export async function runMonitor(
     scheduler = new SessionScheduler()
     scheduler.start((b) => {
       void (async () => {
+        // 非美股交易日全局静默：会话边界也跳过
+        if (config.monitor.suppressOnNonUsTradingDays && (await isUsMarketHoliday(ctx, b.timeMs))) {
+          logger.info(`[会话] 非美股交易日（NYSE 休市），跳过 ${b.session} ${b.edge} 通知`)
+          return
+        }
         const market = await resolveMarketStatus(ctx, b.session)
         const msg = formatSessionAlert(b.session, b.edge, b.timeMs, market.name, market.status)
         await lark.notify(msg)
