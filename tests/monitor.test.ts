@@ -74,6 +74,7 @@ describe('formatFvgAlert', () => {
   it('包含币种/会话/时间/现价/方向/范围/质量', () => {
     const msg = formatFvgAlert({
       symbol: 'BTCUSDT',
+      interval: '5m',
       session: 'LN',
       time: T0,
       close: new BigNumber('64310.4'),
@@ -81,6 +82,7 @@ describe('formatFvgAlert', () => {
       grade: { stars: 3, label: '强' },
     })
     expect(msg).toContain('BTCUSDT')
+    expect(msg).toContain('BTCUSDT · 5m')
     expect(msg).toContain('LN（03-04 NY）')
     expect(msg).toContain('现价：64310.4')
     expect(msg).toContain('看涨 FVG')
@@ -110,8 +112,17 @@ describe('parseKlineMessage（WS 消息解析）', () => {
     const parsed = parseKlineMessage(raw)
     expect(parsed).not.toBeNull()
     expect(parsed!.symbol).toBe('BTCUSDT')
+    expect(parsed!.interval).toBe('5m') // 从 stream 名回退
     expect(parsed!.bar.time).toBe(1000)
     expect(parsed!.bar.close.toString()).toBe('1.15')
+  })
+  it('合并流收盘：k.i 优先于 stream（多周期）', () => {
+    const raw = JSON.stringify({
+      stream: 'btcusdt@kline_5m',
+      data: { e: 'kline', s: 'BTCUSDT', k: { t: 1000, i: '1m', o: '1.1', h: '1.2', l: '1.0', c: '1.15', v: '3.3', x: true } },
+    })
+    const parsed = parseKlineMessage(raw)
+    expect(parsed!.interval).toBe('1m')
   })
   it('单流收盘（x=true）→ {symbol, bar}（symbol 为空）', () => {
     const raw = JSON.stringify({ e: 'kline', k: { t: 1000, o: '1.1', h: '1.2', l: '1.0', c: '1.15', v: '3.3', x: true } })
@@ -230,8 +241,8 @@ describe('handleClosedBar（收盘处理）', () => {
     }
     const ctx: MonitorContext = {
       config,
-      engines: new Map([['BTCUSDT', engine]]),
-      lastProcessed: new Map([['BTCUSDT', T0 + 11 * 300_000]]),
+      engines: new Map([['BTCUSDT|5m', engine]]),
+      lastProcessed: new Map([['BTCUSDT|5m', T0 + 11 * 300_000]]),
     }
     return { ctx, lark }
   }
@@ -239,7 +250,7 @@ describe('handleClosedBar（收盘处理）', () => {
   it('killzone 收盘 bar 产生 bull FVG → 告警', async () => {
     const { ctx, lark } = setup()
     // bar 12（07:30 UTC = 03:30 NY，LN 内）：low=103 > high[10]=100 → bull FVG
-    const alerts = await handleClosedBar(ctx, 'BTCUSDT', mkBar(T0 + 12 * 300_000, 104, 105, 103, 104.5), lark as never)
+    const alerts = await handleClosedBar(ctx, 'BTCUSDT', '5m', mkBar(T0 + 12 * 300_000, 104, 105, 103, 104.5), lark as never)
     expect(alerts).toHaveLength(1)
     expect(alerts[0]).toContain('看涨 FVG')
     expect(alerts[0]).toContain('范围：100 ~ 103')
@@ -249,8 +260,8 @@ describe('handleClosedBar（收盘处理）', () => {
   it('重复 bar（time ≤ lastProcessed）→ 不重复告警', async () => {
     const { ctx, lark } = setup()
     const bar = mkBar(T0 + 12 * 300_000, 104, 105, 103, 104.5)
-    await handleClosedBar(ctx, 'BTCUSDT', bar, lark as never)
-    const again = await handleClosedBar(ctx, 'BTCUSDT', bar, lark as never)
+    await handleClosedBar(ctx, 'BTCUSDT', '5m', bar, lark as never)
+    const again = await handleClosedBar(ctx, 'BTCUSDT', '5m', bar, lark as never)
     expect(again).toHaveLength(0)
     expect(lark.texts).toHaveLength(1)
   })
@@ -258,7 +269,7 @@ describe('handleClosedBar（收盘处理）', () => {
   it('非 killzone bar 产生条件满足也不告警（引擎不建 FVG）', async () => {
     const { ctx, lark } = setup()
     // bar 12 是 killzone 内；bar 0（06:30 UTC = 02:30 NY）非 killzone，即使 low>high[2] 也不建 FVG
-    const res = await handleClosedBar(ctx, 'BTCUSDT', mkBar(T0, 104, 105, 103, 104.5), lark as never)
+    const res = await handleClosedBar(ctx, 'BTCUSDT', '5m', mkBar(T0, 104, 105, 103, 104.5), lark as never)
     expect(res).toHaveLength(0)
     expect(lark.texts).toHaveLength(0)
   })
@@ -285,8 +296,8 @@ describe('非美股交易日门控（加密货币豁免）', () => {
     const lark = { texts, async notify(t: string): Promise<void> { texts.push(t) } }
     const ctx: MonitorContext = {
       config,
-      engines: new Map([['BTCUSDT', engine]]),
-      lastProcessed: new Map([['BTCUSDT', T0 + 11 * 300_000]]),
+      engines: new Map([['BTCUSDT|5m', engine]]),
+      lastProcessed: new Map([['BTCUSDT|5m', T0 + 11 * 300_000]]),
     }
     if (opts.typesKnown ?? true) {
       ctx.symbolUnderlyingTypes = new Map([['BTCUSDT', opts.type ?? 'COIN']])
@@ -303,7 +314,7 @@ describe('非美股交易日门控（加密货币豁免）', () => {
       calls++
       return holiday
     }
-    const res = await handleClosedBar(ctx, 'BTCUSDT', bar12(), lark as never)
+    const res = await handleClosedBar(ctx, 'BTCUSDT', '5m', bar12(), lark as never)
     expect(res).toHaveLength(0)
     expect(lark.texts).toHaveLength(0)
     expect(calls).toBe(1) // 查询了 NYSE 状态
@@ -312,7 +323,7 @@ describe('非美股交易日门控（加密货币豁免）', () => {
   it('休市 + 加密货币（COIN）→ 照常推送', async () => {
     const { ctx, lark } = setup({ type: 'COIN' })
     ctx.marketStatus = async () => holiday
-    const res = await handleClosedBar(ctx, 'BTCUSDT', bar12(), lark as never)
+    const res = await handleClosedBar(ctx, 'BTCUSDT', '5m', bar12(), lark as never)
     expect(res).toHaveLength(1)
     expect(lark.texts).toHaveLength(1)
   })
@@ -320,7 +331,7 @@ describe('非美股交易日门控（加密货币豁免）', () => {
   it('休市 + 类型信息缺失 → fail-open 照常推送', async () => {
     const { ctx, lark } = setup({ typesKnown: false })
     ctx.marketStatus = async () => holiday
-    const res = await handleClosedBar(ctx, 'BTCUSDT', bar12(), lark as never)
+    const res = await handleClosedBar(ctx, 'BTCUSDT', '5m', bar12(), lark as never)
     expect(res).toHaveLength(1)
     expect(lark.texts).toHaveLength(1)
   })
@@ -328,7 +339,7 @@ describe('非美股交易日门控（加密货币豁免）', () => {
   it('交易日 → 正常推送（非 COIN 也推送）', async () => {
     const { ctx, lark } = setup({ type: 'EQUITY' })
     ctx.marketStatus = async () => open
-    const res = await handleClosedBar(ctx, 'BTCUSDT', bar12(), lark as never)
+    const res = await handleClosedBar(ctx, 'BTCUSDT', '5m', bar12(), lark as never)
     expect(res).toHaveLength(1)
     expect(lark.texts).toHaveLength(1)
   })
@@ -336,7 +347,7 @@ describe('非美股交易日门控（加密货币豁免）', () => {
   it('开关关闭时 → 休市日非 COIN 也照常推送', async () => {
     const { ctx, lark } = setup({ suppress: false, type: 'EQUITY' })
     ctx.marketStatus = async () => holiday
-    const res = await handleClosedBar(ctx, 'BTCUSDT', bar12(), lark as never)
+    const res = await handleClosedBar(ctx, 'BTCUSDT', '5m', bar12(), lark as never)
     expect(res).toHaveLength(1)
     expect(lark.texts).toHaveLength(1)
   })
@@ -346,7 +357,7 @@ describe('非美股交易日门控（加密货币豁免）', () => {
     ctx.marketStatus = async () => {
       throw new Error('down')
     }
-    const res = await handleClosedBar(ctx, 'BTCUSDT', bar12(), lark as never)
+    const res = await handleClosedBar(ctx, 'BTCUSDT', '5m', bar12(), lark as never)
     expect(res).toHaveLength(1)
     expect(lark.texts).toHaveLength(1)
   })
@@ -397,7 +408,7 @@ describe('会话过滤（monitor.sessions）', () => {
     const lark = { texts, async notify(t: string): Promise<void> { texts.push(t) } }
     const ctx: MonitorContext = {
       config,
-      engines: new Map([['BTCUSDT', engine]]),
+      engines: new Map([['BTCUSDT|5m', engine]]),
       lastProcessed: new Map(),
     }
     return { ctx, lark }
@@ -408,23 +419,66 @@ describe('会话过滤（monitor.sessions）', () => {
 
   it("sessions=['AM']：LN 不告警、AM 告警", async () => {
     const ln = setup(['AM'])
-    expect(await handleClosedBar(ln.ctx, 'BTCUSDT', mkBar(LN_T, 104, 105, 103, 104.5), ln.lark as never)).toHaveLength(0)
+    expect(await handleClosedBar(ln.ctx, 'BTCUSDT', '5m', mkBar(LN_T, 104, 105, 103, 104.5), ln.lark as never)).toHaveLength(0)
     expect(ln.lark.texts).toHaveLength(0)
 
     const am = setup(['AM'])
-    const res = await handleClosedBar(am.ctx, 'BTCUSDT', mkBar(AM_T, 104, 105, 103, 104.5), am.lark as never)
+    const res = await handleClosedBar(am.ctx, 'BTCUSDT', '5m', mkBar(AM_T, 104, 105, 103, 104.5), am.lark as never)
     expect(res).toHaveLength(1)
     expect(res[0]).toContain('AM（10-11 NY）')
   })
 
   it("sessions=['LN']：AM 不告警、LN 告警", async () => {
     const am = setup(['LN'])
-    expect(await handleClosedBar(am.ctx, 'BTCUSDT', mkBar(AM_T, 104, 105, 103, 104.5), am.lark as never)).toHaveLength(0)
+    expect(await handleClosedBar(am.ctx, 'BTCUSDT', '5m', mkBar(AM_T, 104, 105, 103, 104.5), am.lark as never)).toHaveLength(0)
 
     const ln = setup(['LN'])
-    const res = await handleClosedBar(ln.ctx, 'BTCUSDT', mkBar(LN_T, 104, 105, 103, 104.5), ln.lark as never)
+    const res = await handleClosedBar(ln.ctx, 'BTCUSDT', '5m', mkBar(LN_T, 104, 105, 103, 104.5), ln.lark as never)
     expect(res).toHaveLength(1)
     expect(res[0]).toContain('LN（03-04 NY）')
+  })
+})
+
+describe('多周期隔离（symbol|interval）', () => {
+  function setup() {
+    const config = structuredClone(defaultConfig)
+    config.fvg.mode = 'All FVG'
+    config.monitor.sessions = ['LN', 'AM', 'PM']
+    const cfg = deriveConfig(config, new BigNumber('0.1'))
+    const mkEngine = (interval: string) => {
+      const e = new Engine(cfg, 'BTCUSDT', interval)
+      for (let i = 0; i < 12; i++) {
+        e.feedBar(mkBar(T0 + i * 300_000, 100.5, i === 10 ? 100 : 102, 99, 100.5))
+      }
+      return e
+    }
+    const texts: string[] = []
+    const lark = { texts, async notify(t: string): Promise<void> { texts.push(t) } }
+    const ctx: MonitorContext = {
+      config,
+      engines: new Map([
+        ['BTCUSDT|1m', mkEngine('1m')],
+        ['BTCUSDT|5m', mkEngine('5m')],
+      ]),
+      lastProcessed: new Map(),
+    }
+    return { ctx, lark }
+  }
+
+  it('同一根 bar 分属 1m/5m → 各自告警、去重独立、消息标注级别', async () => {
+    const { ctx, lark } = setup()
+    const bar = mkBar(T0 + 12 * 300_000, 104, 105, 103, 104.5)
+    const r1 = await handleClosedBar(ctx, 'BTCUSDT', '1m', bar, lark as never)
+    const r5 = await handleClosedBar(ctx, 'BTCUSDT', '5m', bar, lark as never)
+    expect(r1).toHaveLength(1)
+    expect(r5).toHaveLength(1)
+    expect(r1[0]).toContain('BTCUSDT · 1m')
+    expect(r5[0]).toContain('BTCUSDT · 5m')
+    expect(ctx.lastProcessed.get('BTCUSDT|1m')).toBe(bar.time)
+    expect(ctx.lastProcessed.get('BTCUSDT|5m')).toBe(bar.time)
+    // 1m 重复同一 bar → 去重；不影响 5m
+    expect(await handleClosedBar(ctx, 'BTCUSDT', '1m', bar, lark as never)).toHaveLength(0)
+    expect(lark.texts).toHaveLength(2)
   })
 })
 
@@ -462,8 +516,8 @@ describe('catchUpAfterReconnect（断线补数）', () => {
     const lark = { texts, async notify(t: string): Promise<void> { texts.push(t) } }
     const ctx: MonitorContext = {
       config,
-      engines: new Map([['BTCUSDT', engine]]),
-      lastProcessed: new Map([['BTCUSDT', T0 + 11 * 300_000]]),
+      engines: new Map([['BTCUSDT|5m', engine]]),
+      lastProcessed: new Map([['BTCUSDT|5m', T0 + 11 * 300_000]]),
     }
     const source = new MockSource()
     return { ctx, lark, source }
@@ -478,7 +532,7 @@ describe('catchUpAfterReconnect（断线补数）', () => {
     expect(lark.texts).toHaveLength(1)
     expect(lark.texts[0]).toContain('看涨 FVG')
     // lastProcessed 已推进到补数 bar
-    expect(ctx.lastProcessed.get('BTCUSDT')).toBe(T0 + 12 * 300_000)
+    expect(ctx.lastProcessed.get('BTCUSDT|5m')).toBe(T0 + 12 * 300_000)
   })
 
   it('无缺口（nowFloor ≤ lastProcessed）→ 不请求不告警', async () => {
@@ -497,7 +551,7 @@ describe('catchUpAfterReconnect（断线补数）', () => {
       return source.bars
     }
     // 预热异常 → lastProcessed 为 0（无基准）
-    ctx.lastProcessed.set('BTCUSDT', 0)
+    ctx.lastProcessed.set('BTCUSDT|5m', 0)
     const alerts = await catchUpAfterReconnect(ctx, source, 'BTCUSDT', '5m', lark as never)
     expect(alerts).toBe(0)
     expect(fetchCalls).toHaveLength(0) // 不得拉全史
@@ -539,8 +593,8 @@ describe('pollForNewBars（REST 轮询兜底）', () => {
     const lark = { texts, async notify(t: string): Promise<void> { texts.push(t) } }
     const ctx: MonitorContext = {
       config,
-      engines: new Map([['BTCUSDT', engine]]),
-      lastProcessed: new Map([['BTCUSDT', T0 + 11 * 300_000]]),
+      engines: new Map([['BTCUSDT|5m', engine]]),
+      lastProcessed: new Map([['BTCUSDT|5m', T0 + 11 * 300_000]]),
     }
     return { ctx, lark, source: new MockSource() }
   }
@@ -552,7 +606,7 @@ describe('pollForNewBars（REST 轮询兜底）', () => {
     const alerts = await pollForNewBars(ctx, source, 'BTCUSDT', '5m', lark as never, () => T0 + 13 * 300_000)
     expect(alerts).toBe(1)
     expect(lark.texts).toHaveLength(1)
-    expect(ctx.lastProcessed.get('BTCUSDT')).toBe(T0 + 12 * 300_000)
+    expect(ctx.lastProcessed.get('BTCUSDT|5m')).toBe(T0 + 12 * 300_000)
   })
 
   it('进行中的 bar（未收盘）不处理', async () => {

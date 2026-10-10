@@ -46,6 +46,7 @@ export const defaultConfig: Config = {
     notifySessionBoundary: true,
     suppressOnNonUsTradingDays: true,
     sessions: ['AM'],
+    intervals: ['5m'],
     lark: {
       appId: '',
       appSecret: '',

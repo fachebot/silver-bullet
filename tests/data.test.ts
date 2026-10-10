@@ -5,7 +5,7 @@ import BigNumber from 'bignumber.js'
 
 import { buildProxyUrl } from '../src/data/httpClient.js'
 import { createDataSource } from '../src/data/index.js'
-import { BinanceSource, coverageOk, DEFAULT_BASE_URL } from '../src/data/binance.js'
+import { BinanceSource, coverageOk, buildKlineStreams, DEFAULT_BASE_URL } from '../src/data/binance.js'
 import { loadCachedKlines, saveCachedKlines } from '../src/data/cache.js'
 import { configSchema } from '../src/config/schema.js'
 import { defaultConfig } from '../src/config/default.js'
@@ -219,6 +219,19 @@ describe('fetchKlines 完整性（注入假 http，不落脏缓存）', () => {
     expect(bars).toHaveLength(0)
     expect(loadCachedKlines('binance', { symbol, interval: '5m' }, start, end)).toBeNull()
     expect(calls.length).toBe(1) // 空窗不重试
+  })
+})
+
+describe('buildKlineStreams（多周期合并流）', () => {
+  it('symbol × interval 组合', () => {
+    expect(buildKlineStreams(['BTCUSDT'], ['1m', '5m'])).toEqual(['btcusdt@kline_1m', 'btcusdt@kline_5m'])
+    expect(buildKlineStreams(['BTCUSDT', 'ETHUSDT'], ['5m'])).toEqual([
+      'btcusdt@kline_5m',
+      'ethusdt@kline_5m',
+    ])
+  })
+  it('过滤空项', () => {
+    expect(buildKlineStreams(['', 'BTCUSDT'], ['5m', ''])).toEqual(['btcusdt@kline_5m'])
   })
 })
 

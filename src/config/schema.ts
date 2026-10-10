@@ -34,8 +34,8 @@ export const configSchema = z.object({
     .object({
       mode: fvgModeSchema,
       extend: z.boolean(),
-      // 每币种 FVG 缺口阈值（绝对价格，非负）
-      minGapBySymbol: z.record(z.string(), z.number().nonnegative()),
+      // 每币种、每周期的 FVG 缺口阈值（绝对价格，非负）
+      minGapBySymbol: z.record(z.string(), z.record(z.string(), z.number().nonnegative())),
     })
     .strict(),
   targets: z
@@ -68,6 +68,7 @@ export const configSchema = z.object({
       notifySessionBoundary: z.boolean(),
       suppressOnNonUsTradingDays: z.boolean(),
       sessions: z.array(z.enum(['LN', 'AM', 'PM'])).min(1),
+      intervals: z.array(z.string().min(1)).min(1),
       lark: z
         .object({
           appId: z.string(),

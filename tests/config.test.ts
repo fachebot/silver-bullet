@@ -17,6 +17,7 @@ describe('默认配置（与 Pine 默认值一致）', () => {
     expect(defaultConfig.targets.sessionOption).toBe('previous session (similar)')
     expect(defaultConfig.targets.keepLines).toBe(true)
     expect(defaultConfig.monitor.sessions).toEqual(['AM'])
+    expect(defaultConfig.monitor.intervals).toEqual(['5m'])
   })
 })
 
@@ -90,14 +91,14 @@ describe('zod schema 校验', () => {
     bad.sbSession = { show: true } // 已删除的旧键
     expect(() => configSchema.parse(bad)).toThrow()
   })
-  it('minGapBySymbol 接受每币种非负价格', () => {
+  it('minGapBySymbol 接受每币种每周期非负价格', () => {
     const cfg = structuredClone(defaultConfig)
-    cfg.fvg.minGapBySymbol = { BTCUSDT: 50, ETHUSDT: 0 }
+    cfg.fvg.minGapBySymbol = { BTCUSDT: { '1m': 10, '5m': 50 }, ETHUSDT: { '5m': 0 } }
     expect(() => configSchema.parse(cfg)).not.toThrow()
   })
   it('minGapBySymbol 负数报错', () => {
     const bad = structuredClone(defaultConfig)
-    bad.fvg.minGapBySymbol = { BTCUSDT: -1 }
+    bad.fvg.minGapBySymbol = { BTCUSDT: { '5m': -1 } }
     expect(() => configSchema.parse(bad)).toThrow()
   })
   it('monitor.sessions 接受合法会话集合', () => {
@@ -113,17 +114,26 @@ describe('zod schema 校验', () => {
     bad.monitor.sessions = ['XX'] as never
     expect(() => configSchema.parse(bad)).toThrow()
   })
+  it('monitor.intervals 空数组报错、合法通过', () => {
+    const empty = structuredClone(defaultConfig)
+    empty.monitor.intervals = []
+    expect(() => configSchema.parse(empty)).toThrow()
+    const ok = structuredClone(defaultConfig)
+    ok.monitor.intervals = ['1m', '3m', '5m']
+    expect(() => configSchema.parse(ok)).not.toThrow()
+  })
   it('合法配置通过', () => {
     expect(() => configSchema.parse(defaultConfig)).not.toThrow()
   })
 })
 
 describe('minGapForSymbol', () => {
-  it('命中返回配置值，未配置返回 0', () => {
+  it('按 (symbol, interval) 命中返回配置值，未配置返回 0', () => {
     const cfg = structuredClone(defaultConfig)
-    cfg.fvg.minGapBySymbol = { BTCUSDT: 50 }
-    expect(minGapForSymbol(cfg, 'BTCUSDT').toString()).toBe('50')
-    expect(minGapForSymbol(cfg, 'ETHUSDT').toString()).toBe('0')
+    cfg.fvg.minGapBySymbol = { BTCUSDT: { '1m': 10, '5m': 50 } }
+    expect(minGapForSymbol(cfg, 'BTCUSDT', '5m').toString()).toBe('50')
+    expect(minGapForSymbol(cfg, 'BTCUSDT', '3m').toString()).toBe('0')
+    expect(minGapForSymbol(cfg, 'ETHUSDT', '5m').toString()).toBe('0')
   })
 })
 

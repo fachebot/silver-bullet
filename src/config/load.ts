@@ -96,8 +96,8 @@ export function deriveConfig(config: Config, mintick: BigNumber): DerivedConfig 
   }
 }
 
-// 解析某 symbol 的 FVG 缺口阈值（绝对价格）；未配置返回 0（不过滤）
-export function minGapForSymbol(config: Config, symbol: string): BigNumber {
-  const raw = config.fvg.minGapBySymbol?.[symbol]
+// 解析某 (symbol, interval) 的 FVG 缺口阈值（绝对价格）；未配置返回 0（不过滤）
+export function minGapForSymbol(config: Config, symbol: string, interval: string): BigNumber {
+  const raw = config.fvg.minGapBySymbol?.[symbol]?.[interval]
   return new BigNumber(raw ?? 0)
 }

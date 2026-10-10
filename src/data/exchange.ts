@@ -34,12 +34,12 @@ export interface DataSource {
   // 可选：查询 symbols 的底层类型（如 Binance 的 underlyingType：COIN/EQUITY/COMMODITY…），
   // 用于判定“加密货币”（COIN）在非美股交易日豁免通知。未实现则视为无此能力。
   fetchUnderlyingTypes?(symbols: string[]): Promise<Map<string, string | null>>
-  // 订阅多个 symbol 的已收盘 K 线（合并流，单连接，实时推送）
+  // 订阅多个 symbol × 周期 的已收盘 K 线（合并流，单连接，实时推送）
   // 重连成功后调用 onReconnect（用于补数），返回取消订阅函数
   subscribeClosedKlines(
     symbols: string[],
-    interval: string,
-    onBar: (symbol: string, bar: Kline) => void,
+    intervals: string[],
+    onBar: (symbol: string, interval: string, bar: Kline) => void,
     onReconnect?: () => void,
   ): () => void
 }

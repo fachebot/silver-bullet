@@ -48,7 +48,7 @@ async function main(): Promise<void> {
   }
 
   // 4. 运行引擎
-  const engine = new Engine(cfg, data.symbol, data.interval, { minGap: minGapForSymbol(config, data.symbol) })
+  const engine = new Engine(cfg, data.symbol, data.interval, { minGap: minGapForSymbol(config, data.symbol, data.interval) })
   const result = engine.run(bars)
   const serialized = serialize(result)
 

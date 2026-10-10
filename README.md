@@ -1,6 +1,6 @@
 # ICT Silver Bullet 实时监控系统
 
-LuxAlgo **ICT Silver Bullet**（`ict-silver-bullet.pine`）的 TypeScript 实现，以**实时监控**为核心：订阅 Binance 合约 5m K 线，在 killzone（LN/AM/PM）内检测收盘新 FVG 并即时推送 **Lark 应用内加急**通知；同时保留批量信号引擎，可拉历史数据运行同一引擎输出 JSON 供研究。
+LuxAlgo **ICT Silver Bullet**（`ict-silver-bullet.pine`）的 TypeScript 实现，以**实时监控**为核心：订阅 Binance 合约 K 线（可多周期并行），在 killzone（LN/AM/PM）内检测收盘新 FVG 并即时推送 **Lark 应用内加急**通知；同时保留批量信号引擎，可拉历史数据运行同一引擎输出 JSON 供研究。
 
 - **实时监控（主）** `npm run monitor`：长驻运行，WS + REST 双通道，自动重连补数，告警即推 Lark
 - **批量信号引擎（次）** `npm start`：拉历史 → 引擎 → 输出 JSON（与研究对照/回看用）
@@ -12,8 +12,8 @@ LuxAlgo **ICT Silver Bullet**（`ict-silver-bullet.pine`）的 TypeScript 实现
 
 | 能力 | 说明 |
 |---|---|
-| Killzone FVG 告警 | 会话内 5m 收盘产生 FVG → Lark 加急，附质量星级 |
-| 会话边界通知 | LN/AM/PM 开始/结束在 **NY 整点**精确通知（每边界一次、全局加急） |
+| Killzone FVG 告警 | 会话内收盘产生 FVG → Lark 加急，附质量星级（多周期，见 `monitor.intervals`） |
+| 会话边界通知 | 已启用会话的开始/结束在 **NY 整点**精确通知（每边界一次、全局加急） |
 | 市场开闭状态 | 每条通知附当前对应市场是否开盘（FinCal API + 本地规则降级，含半天日） |
 | 高可用数据链路 | 单条合并 WebSocket + 断线指数退避重连 + 重连后 REST 补数 + REST 轮询兜底 |
 | 多币种去重 | 跨通道共享 `lastProcessed`，绝不重复告警 |
@@ -38,7 +38,7 @@ npm run typecheck  # 类型检查
 
 ### 架构
 
-长驻进程，`monitor.symbols` 各币种通过**一条合并 WebSocket 连接**（`wss://fstream.binance.com/market/stream?streams=<sym>@kline_5m/...`，注意 2026-04-23 起旧 `/stream`、`/ws` 路径已退役）订阅 5m K 线（走 `data.proxyUrl` 代理）；启动时用最近 `warmupDays` 天历史预热引擎状态。每当一根 K 线收盘且处于 killzone（LN/AM/PM）内并产生新 FVG，就向 Lark 发送**应用内加急**消息。
+长驻进程，`monitor.symbols` 各币种 × `monitor.intervals` 各周期通过**一条合并 WebSocket 连接**（`wss://fstream.binance.com/market/stream?streams=<sym>@kline_1m/<sym>@kline_5m/...`，注意 2026-04-23 起旧 `/stream`、`/ws` 路径已退役）订阅 K 线（走 `data.proxyUrl` 代理）；启动时用最近 `warmupDays` 天历史预热各 `(币种, 周期)` 引擎状态。每当一根 K 线收盘且处于已启用会话（`monitor.sessions`）内并产生新 FVG，就向 Lark 发送**应用内加急**消息。
 
 WS 断线自动重连（指数退避 1s→60s 封顶，`error` 也触发重连）；重连成功后用 REST 补拉断线期间收盘的 bar，避免漏报。
 
@@ -62,7 +62,7 @@ WS 断线自动重连（指数退避 1s→60s 封顶，`error` 也触发重连�
 消息示例：
 
 ```
-🚨 KILLZONE FVG · BTCUSDT
+🚨 KILLZONE FVG · BTCUSDT · 5m
 会话：AM（10-11 NY）
 时间：2026-09-07 22:35（北京）
 现价：64310.4
@@ -72,19 +72,27 @@ WS 断线自动重连（指数退避 1s→60s 封顶，`error` 也触发重连�
 纽约早盘：当前已开盘
 ```
 
+#### 多时间级别（`monitor.intervals`）
+
+监控可**同时运行多个 K 线周期**：`monitor.intervals`（默认 `["5m"]`）列出要监控的周期（如 `["1m","3m","5m"]`）。每个 `(币种, 周期)` 维护独立引擎与去重游标，互不干扰；FVG 告警标题会标注周期（如 `· 5m`）。多周期共用**一条合并 WebSocket 连接**。会话（killzone）本身是固定 NY 时间窗口，与周期无关。
+
+> 批量信号引擎（`npm start`）仍使用单一 `data.interval`，不受此项影响。
+
 #### 缺口阈值（`fvg.minGapBySymbol`）
 
-缺口大小 = `box top − bottom`。可**按币种**配置最小缺口（绝对价格），仅当缺口 **大于** 阈值时才创建该 FVG（引擎侧过滤，批量引擎 `npm start` 同样生效）：
+缺口大小 = `box top − bottom`。可**按币种 + 周期**配置最小缺口（绝对价格），仅当缺口 **大于** 阈值时才创建该 FVG（引擎侧过滤，批量引擎 `npm start` 同样生效）：
 
 ```jsonc
 "fvg": {
   "mode": "All FVG",
   "extend": true,
-  "minGapBySymbol": { "BTCUSDT": 50, "ETHUSDT": 2 }   // 未列出的币种 = 0（不过滤）
+  "minGapBySymbol": {
+    "BTCUSDT": { "1m": 10, "3m": 25, "5m": 50 }   // 未列出的 (币种, 周期) = 0（不过滤）
+  }
 }
 ```
 
-> 阈值为绝对价格，币价长期大幅变动后需相应调整。
+> 阈值为绝对价格，币价长期大幅变动后需相应调整。小周期通常缺口更小，建议按周期设置不同阈值。
 
 ### 非美股交易日门控（加密货币豁免）
 
@@ -207,7 +215,7 @@ tests/        单元测试与集成测试
 | `swings.left` | `5` | pivot 左半径（1~20，对应 Pine `left`） |
 | `fvg.mode` | `All FVG` | 对应 Pine `choice`：All FVG / Only FVG in the same direction of trend / Strict / Super-Strict（Pine 默认为 `Super-Strict`，本项目默认 `All FVG`） |
 | `fvg.extend` | `true` | 对应 Pine `extend` |
-| `fvg.minGapBySymbol` | `{}` | 每币种 FVG 缺口阈值（绝对价格）：缺口 = `top − bottom`，仅当缺口 > 阈值才创建；未列出=0（不过滤） |
+| `fvg.minGapBySymbol` | `{}` | 每币种+周期 FVG 缺口阈值（绝对价格）：`{ "BTCUSDT": { "1m": 10, "5m": 50 } }`，缺口 = `top − bottom`，仅当缺口 > 阈值才创建；未列出=0（不过滤） |
 | `targets.sessionOption` | `previous session (similar)` | 对应 Pine `opt`：previous session (any) / previous session (similar) |
 | `targets.keepLines` | `true` | 对应 Pine `keep`（仅 [super-]strict 模式生效） |
 | `data.symbol` | `BTCUSDT` | 批量引擎币种 |
@@ -224,6 +232,7 @@ tests/        单元测试与集成测试
 | `monitor.notifySessionBoundary` | `true` | 会话开始/结束时 Lark 加急通知（NY 整点） |
 | `monitor.suppressOnNonUsTradingDays` | `true` | 非美股交易日（NYSE 休市）时不推送非加密货币（COIN 豁免）；会话边界始终静默 |
 | `monitor.sessions` | `["AM"]` | 仅这些会话产生 FVG 告警与会话边界通知（可含 `"LN"`/`"AM"`/`"PM"`；默认仅纽约早盘） |
+| `monitor.intervals` | `["5m"]` | 监控的 K 线周期（多周期并行，如 `["1m","3m","5m"]`） |
 | `monitor.lark.*` | — | Lark 应用加急配置（见"实时监控"） |
 | `market.statusApiBase` | `https://fincalapi.com` | FinCal API 地址 |
 | `market.apiKey` | `` | FinCal API key（`fincal_live_...`，免费注册 fincalapi.com） |

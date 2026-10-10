@@ -28,9 +28,9 @@ export interface SwingsConfig {
 export interface FvgConfig {
   mode: FvgMode
   extend: boolean
-  // 每币种 FVG 缺口阈值（绝对价格）：缺口 = box top - bottom，仅当缺口 > 阈值才创建该 FVG；
-  // 未列出的 symbol 视为 0（不过滤）
-  minGapBySymbol: Record<string, number>
+  // 每币种、每周期的 FVG 缺口阈值（绝对价格）：symbol -> interval -> 阈值。
+  // 缺口 = box top - bottom，仅当缺口 > 阈值才创建该 FVG；未配置的 (symbol, interval) 视为 0（不过滤）
+  minGapBySymbol: Record<string, Record<string, number>>
 }
 
 // 目标支撑/阻力设置（对应 Pine: opt / keep）
@@ -71,6 +71,7 @@ export interface MonitorConfig {
   notifySessionBoundary: boolean // 会话开始/结束时 Lark 加急通知（整点）
   suppressOnNonUsTradingDays: boolean // 非美股交易日（NYSE 休市）时所有标的与会话边界均不推送
   sessions: MonitorSession[] // 仅这些会话产生 FVG 告警与会话边界通知（默认仅 AM）
+  intervals: string[] // 监控的 K 线周期（多周期并行，如 ["1m","3m","5m"]）
   lark: LarkMonitorConfig
 }
 

@@ -7,6 +7,7 @@ import type { MarketStatus } from '../market/marketCalendar.js'
 
 export interface FvgAlertInfo {
   symbol: string
+  interval: string
   session: 'LN' | 'AM' | 'PM'
   time: number
   close: BigNumber
@@ -45,7 +46,7 @@ export function formatFvgAlert(a: FvgAlertInfo): string {
   const range = `${a.fvg.bottom.toString()} ~ ${a.fvg.top.toString()}`
   const stars = '⭐'.repeat(a.grade.stars)
   const lines = [
-    `🚨 KILLZONE FVG · ${a.symbol}`,
+    `🚨 KILLZONE FVG · ${a.symbol} · ${a.interval}`,
     `会话：${SESSION_LABEL[a.session] ?? a.session}`,
     `时间：${bjt(a.time)}（北京）`,
     `现价：${a.close.toString()}`,

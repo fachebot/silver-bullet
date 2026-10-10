@@ -32,6 +32,7 @@
     "notifySessionBoundary": true,
     "suppressOnNonUsTradingDays": true,
     "sessions": ["AM"],
+    "intervals": ["1m", "3m", "5m"],
     "lark": {
       "appId": "",
       "appSecret": "",

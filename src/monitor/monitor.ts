@@ -62,20 +62,25 @@ export async function isUsMarketHoliday(ctx: MonitorContext, timeMs: number): Pr
   }
 }
 
+// 引擎/去重键：symbol|interval（多周期并行）
+const keyOf = (symbol: string, interval: string): string => `${symbol}|${interval}`
+
 // 处理一根新收盘 bar（去重 → feedBar → 检测 killzone FVG → 生成并发送告警）
 // 返回生成的告警文本（便于测试）
 export async function handleClosedBar(
   ctx: MonitorContext,
   symbol: string,
+  interval: string,
   bar: Kline,
   lark: LarkClient,
 ): Promise<string[]> {
   const logger = getLogger()
-  const last = ctx.lastProcessed.get(symbol) ?? 0
+  const key = keyOf(symbol, interval)
+  const last = ctx.lastProcessed.get(key) ?? 0
   if (bar.time <= last) return [] // 重复/历史 bar
-  ctx.lastProcessed.set(symbol, bar.time)
+  ctx.lastProcessed.set(key, bar.time)
 
-  const engine = ctx.engines.get(symbol)
+  const engine = ctx.engines.get(key)
   if (!engine) return []
 
   const res = engine.feedBar(bar)
@@ -91,7 +96,7 @@ export async function handleClosedBar(
       // COIN 豁免；类型信息未获取（undefined）时 fail-open 照常推送
       const exempt = type === 'COIN' || ctx.symbolUnderlyingTypes === undefined
       if (!exempt) {
-        logger.info(`[监控] ${symbol}（${type ?? '未知'}）非美股交易日，跳过推送（${res.session} FVG）`)
+        logger.info(`[监控] ${symbol} ${interval}（${type ?? '未知'}）非美股交易日，跳过推送（${res.session} FVG）`)
         return []
       }
     }
@@ -100,6 +105,7 @@ export async function handleClosedBar(
       const grade = gradeFvg(res.trend, fvg.type, res.close, bar.high, bar.low)
       const msg = formatFvgAlert({
         symbol,
+        interval,
         session: res.session,
         time: res.time,
         close: res.close,
@@ -109,7 +115,7 @@ export async function handleClosedBar(
         marketStatus: market.status,
       })
       alerts.push(msg)
-      logger.info(`[监控] ${symbol} ${res.session} FVG 触发（${grade.stars}星 ${grade.label}）`)
+      logger.info(`[监控] ${symbol} ${interval} ${res.session} FVG 触发（${grade.stars}星 ${grade.label}）`)
       await lark.notify(msg)
     }
   }
@@ -128,10 +134,11 @@ export async function catchUpAfterReconnect(
 ): Promise<number> {
   const logger = getLogger()
   const intervalMs = source.intervalToMs(interval)
-  const last = ctx.lastProcessed.get(symbol) ?? 0
+  const key = keyOf(symbol, interval)
+  const last = ctx.lastProcessed.get(key) ?? 0
   // 无基准（预热异常/从未处理过 bar）时不拉全史，等 WS/轮询自然推进首根 bar 建立基准
   if (last <= 0) {
-    logger.warn(`[监控] ${symbol} lastProcessed 为空，跳过断线补数（等待实时数据建立基准）`)
+    logger.warn(`[监控] ${symbol} ${interval} lastProcessed 为空，跳过断线补数（等待实时数据建立基准）`)
     return 0
   }
   const nowFloor = Math.floor(now() / intervalMs) * intervalMs
@@ -145,10 +152,10 @@ export async function catchUpAfterReconnect(
   })
   let alerts = 0
   for (const bar of bars) {
-    alerts += (await handleClosedBar(ctx, symbol, bar, lark)).length
+    alerts += (await handleClosedBar(ctx, symbol, interval, bar, lark)).length
   }
   if (bars.length > 0) {
-    logger.info(`[监控] ${symbol} 断线补数 ${bars.length} 根（含 ${alerts} 条告警）`)
+    logger.info(`[监控] ${symbol} ${interval} 断线补数 ${bars.length} 根（含 ${alerts} 条告警）`)
   }
   return alerts
 }
@@ -164,7 +171,7 @@ export async function pollForNewBars(
   now: () => number = () => Date.now(),
 ): Promise<number> {
   const intervalMs = source.intervalToMs(interval)
-  const last = ctx.lastProcessed.get(symbol) ?? 0
+  const last = ctx.lastProcessed.get(keyOf(symbol, interval)) ?? 0
   // 拉最近 50 根（5m≈4h 覆盖）：REST 抖动/短暂断流期间漏掉的 bar 会在下次成功轮询时自动补齐，
   // 弱化对"恰好每次轮询都拉到最新收盘 bar + 本地时钟对齐"的依赖。
   // 注：未收盘 bar 会被下方 time + intervalMs <= now() 过滤；交易所只在收盘后才返回已确定 K 线，风险低。
@@ -173,7 +180,7 @@ export async function pollForNewBars(
   for (const bar of recent) {
     // 仅处理已收盘（bar 结束时间 ≤ 当前）且比 last 新的 bar；handleClosedBar 内部再按 time>last 去重
     if (bar.time > last && bar.time + intervalMs <= now()) {
-      alerts += (await handleClosedBar(ctx, symbol, bar, lark)).length
+      alerts += (await handleClosedBar(ctx, symbol, interval, bar, lark)).length
     }
   }
   return alerts
@@ -186,8 +193,9 @@ export async function runMonitor(
   lark: LarkClient,
 ): Promise<void> {
   const logger = getLogger()
-  const interval = config.data.interval
-  const intervalMs = source.intervalToMs(interval)
+  const symbols = config.monitor.symbols
+  const intervals = config.monitor.intervals
+  for (const iv of intervals) source.intervalToMs(iv) // 校验周期
   const warmupMs = config.monitor.warmupDays * 24 * 60 * 60 * 1000
 
   const ctx: MonitorContext = {
@@ -204,10 +212,10 @@ export async function runMonitor(
 
   // 查询各 symbol 的 underlyingType（识别加密货币 COIN，用于非美股交易日豁免）
   try {
-    const types = await source.fetchUnderlyingTypes?.(config.monitor.symbols)
+    const types = await source.fetchUnderlyingTypes?.(symbols)
     if (types) {
       ctx.symbolUnderlyingTypes = types
-      const coins = config.monitor.symbols.filter((s) => types.get(s) === 'COIN')
+      const coins = symbols.filter((s) => types.get(s) === 'COIN')
       if (coins.length > 0) logger.info(`[监控] 加密货币（非美股交易日豁免）：${coins.join(', ')}`)
     }
   } catch (err) {
@@ -215,39 +223,43 @@ export async function runMonitor(
     logger.warn(`[监控] 查询 underlyingType 失败，非美股交易日不抑制通知: ${(err as Error).message}`)
   }
 
-  // 预热：每币种拉历史并 run（静默建状态；live 模式：不累积输出、按存活窗口剪枝 FVG）
-  for (const symbol of config.monitor.symbols) {
+  // 预热：每币种 × 每周期 拉历史并 run（静默建状态；live 模式：不累积输出、按存活窗口剪枝 FVG）
+  for (const symbol of symbols) {
     const tickSize = await source.fetchTickSize(symbol)
-    const engine = new Engine(deriveConfig(config, tickSize), symbol, interval, {
-      live: true,
-      minGap: minGapForSymbol(config, symbol),
-    })
-    const end = Math.floor(Date.now() / intervalMs) * intervalMs
-    const start = end - warmupMs
-    const hist = await source.fetchKlines({ symbol, interval, startTime: start, endTime: end })
-    engine.run(hist)
-    const last = hist.length > 0 ? hist[hist.length - 1].time : 0
-    ctx.engines.set(symbol, engine)
-    ctx.lastProcessed.set(symbol, last)
-    logger.info(`[监控] ${symbol} 预热完成：${hist.length} 根 bar`)
+    for (const interval of intervals) {
+      const intervalMs = source.intervalToMs(interval)
+      const engine = new Engine(deriveConfig(config, tickSize), symbol, interval, {
+        live: true,
+        minGap: minGapForSymbol(config, symbol, interval),
+      })
+      const end = Math.floor(Date.now() / intervalMs) * intervalMs
+      const start = end - warmupMs
+      const hist = await source.fetchKlines({ symbol, interval, startTime: start, endTime: end })
+      engine.run(hist)
+      const last = hist.length > 0 ? hist[hist.length - 1].time : 0
+      ctx.engines.set(keyOf(symbol, interval), engine)
+      ctx.lastProcessed.set(keyOf(symbol, interval), last)
+      logger.info(`[监控] ${symbol} ${interval} 预热完成：${hist.length} 根 bar`)
+    }
   }
 
-  // 订阅 WS（可选，合并流单连接）
+  // 订阅 WS（可选，合并流单连接，含多周期）
   if (config.monitor.useWebSocket) {
-    const symbols = config.monitor.symbols
     const unsub = source.subscribeClosedKlines(
       symbols,
-      interval,
-      (symbol, bar) => {
-        void handleClosedBar(ctx, symbol, bar, lark).catch((err) => {
-          logger.error(`[监控] ${symbol} 处理失败: ${(err as Error).message}`)
+      intervals,
+      (symbol, interval, bar) => {
+        void handleClosedBar(ctx, symbol, interval, bar, lark).catch((err) => {
+          logger.error(`[监控] ${symbol} ${interval} 处理失败: ${(err as Error).message}`)
         })
       },
       () => {
         for (const symbol of symbols) {
-          void catchUpAfterReconnect(ctx, source, symbol, interval, lark).catch((err) => {
-            logger.error(`[监控] ${symbol} 补数失败: ${(err as Error).message}`)
-          })
+          for (const interval of intervals) {
+            void catchUpAfterReconnect(ctx, source, symbol, interval, lark).catch((err) => {
+              logger.error(`[监控] ${symbol} ${interval} 补数失败: ${(err as Error).message}`)
+            })
+          }
         }
       },
     )
@@ -258,17 +270,19 @@ export async function runMonitor(
   const pollTimer =
     config.monitor.pollSeconds > 0
       ? setInterval(() => {
-          for (const symbol of config.monitor.symbols) {
-            void pollForNewBars(ctx, source, symbol, interval, lark).catch((err) => {
-              logger.error(`[监控] ${symbol} 轮询失败: ${(err as Error).message}`)
-            })
+          for (const symbol of symbols) {
+            for (const interval of intervals) {
+              void pollForNewBars(ctx, source, symbol, interval, lark).catch((err) => {
+                logger.error(`[监控] ${symbol} ${interval} 轮询失败: ${(err as Error).message}`)
+              })
+            }
           }
         }, config.monitor.pollSeconds * 1000)
       : null
   if (pollTimer !== null) unsubs.push(() => clearInterval(pollTimer))
 
   logger.info(
-    `[监控] 已启动：WS=${config.monitor.useWebSocket ? '开' : '关'} 轮询=${config.monitor.pollSeconds > 0 ? config.monitor.pollSeconds + 's' : '关'}，等待 killzone 收盘 FVG...`,
+    `[监控] 已启动：币种=${symbols.join(', ')} 周期=${intervals.join('/')} 会话=${config.monitor.sessions.join('/')} WS=${config.monitor.useWebSocket ? '开' : '关'} 轮询=${config.monitor.pollSeconds > 0 ? config.monitor.pollSeconds + 's' : '关'}，等待 killzone 收盘 FVG...`,
   )
 
   // 会话边界整点通知（全局一次，加急；附市场开闭状态；仅配置的会话）

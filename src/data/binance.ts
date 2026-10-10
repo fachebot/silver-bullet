@@ -205,19 +205,19 @@ export class BinanceSource implements DataSource {
     return raw.map(parseKline)
   }
 
-  // 订阅多个 symbol 的已收盘 K 线（合并流 /market/stream，单连接）
+  // 订阅多个 symbol × 周期 的已收盘 K 线（合并流 /market/stream，单连接）
   // 断线自动重连（指数退避，1s→60s 封顶）；重连成功后调用 onReconnect（用于补数）
   // error 也会触发重连（不再依赖 close）；取消后不再重连
   subscribeClosedKlines(
     symbols: string[],
-    interval: string,
-    onBar: (symbol: string, bar: Kline) => void,
+    intervals: string[],
+    onBar: (symbol: string, interval: string, bar: Kline) => void,
     onReconnect?: () => void,
   ): () => void {
-    this.intervalToMs(interval)
-    const list = symbols
-      .filter((s) => s.trim() !== '')
-      .map((s) => `${s.toLowerCase()}@kline_${interval}`)
+    const ivs = intervals.filter((i) => i.trim() !== '')
+    for (const iv of ivs) this.intervalToMs(iv) // 校验周期
+    const syms = symbols.filter((s) => s.trim() !== '')
+    const list = buildKlineStreams(syms, ivs)
     if (list.length === 0) return () => {}
     // 注意：2026-04-23 起旧 /stream、/ws 路径退役，市场流需用 /market 前缀
     const url = `${DEFAULT_WS_URL}/market/stream?streams=${list.join('/')}`
@@ -273,7 +273,7 @@ export class BinanceSource implements DataSource {
         reconnectDelay = 1000
         reconnectTimer = null
         lastMsgTime = Date.now() // 重置假活时钟：连上即开始计时
-        getLogger().info(`[WS] 已连接（${symbols.join(', ')}）`)
+        getLogger().info(`[WS] 已连接（${syms.join(', ')} @ ${ivs.join('/')}）`)
         // 重连成功后触发补数（首次连接不补）
         if (!isFirstConnect) {
           getLogger().info('[WS] 重连成功，触发补数')
@@ -290,14 +290,14 @@ export class BinanceSource implements DataSource {
           const text = data.toString()
           const upd = parseKlineUpdate(text)
           if (upd) {
-            msgCount.set(upd.symbol, (msgCount.get(upd.symbol) ?? 0) + 1)
+            msgCount.set(`${upd.symbol}@${upd.interval}`, (msgCount.get(`${upd.symbol}@${upd.interval}`) ?? 0) + 1)
             totalMsg++
             lastMsgTime = Date.now()
             if (upd.closed) {
-              getLogger().info(`[WS] 收盘 ${upd.symbol} ${new Date(upd.time).toISOString()} close=${upd.close.toString()}`)
-              onBar(upd.symbol, upd.bar)
+              getLogger().info(`[WS] 收盘 ${upd.symbol} ${upd.interval} ${new Date(upd.time).toISOString()} close=${upd.close.toString()}`)
+              onBar(upd.symbol, upd.interval, upd.bar)
             } else {
-              getLogger().debug(`[WS] 推送 ${upd.symbol} ${new Date(upd.time).toISOString()} close=${upd.close.toString()}（进行中）`)
+              getLogger().debug(`[WS] 推送 ${upd.symbol} ${upd.interval} ${new Date(upd.time).toISOString()} close=${upd.close.toString()}（进行中）`)
             }
           } else {
             getLogger().debug(`[WS] 其它消息: ${text.slice(0, 120)}`)
@@ -343,6 +343,7 @@ export class BinanceSource implements DataSource {
 // 宽松解析 WS kline 消息（含进行中）：支持单流 { k } 与合并流 { stream, data: { s, k } }
 export interface KlineUpdate {
   symbol: string
+  interval: string
   time: number
   close: BigNumber
   closed: boolean
@@ -360,6 +361,7 @@ export function parseKlineUpdate(raw: string): KlineUpdate | null {
   if (!k || k.t === undefined || k.o === undefined || k.h === undefined || k.l === undefined || k.c === undefined) {
     return null // 不完整的 kline 消息
   }
+  const interval = k.i ?? intervalFromStream(msg.stream) ?? ''
   const bar: Kline = {
     time: k.t ?? 0,
     open: new BigNumber(String(k.o)),
@@ -368,14 +370,14 @@ export function parseKlineUpdate(raw: string): KlineUpdate | null {
     close: new BigNumber(String(k.c)),
     volume: new BigNumber(String(k.v)),
   }
-  return { symbol: symbol ?? '', time: bar.time, close: bar.close, closed: k.x === true, bar }
+  return { symbol: symbol ?? '', interval, time: bar.time, close: bar.close, closed: k.x === true, bar }
 }
 
-// 解析 WS kline 消息：仅收盘（k.x === true）返回 { symbol, bar }
-export function parseKlineMessage(raw: string): { symbol: string; bar: Kline } | null {
+// 解析 WS kline 消息：仅收盘（k.x === true）返回 { symbol, interval, bar }
+export function parseKlineMessage(raw: string): { symbol: string; interval: string; bar: Kline } | null {
   const upd = parseKlineUpdate(raw)
   if (!upd || !upd.closed) return null
-  return { symbol: upd.symbol, bar: upd.bar }
+  return { symbol: upd.symbol, interval: upd.interval, bar: upd.bar }
 }
 
 interface KlinePayload {
@@ -385,6 +387,7 @@ interface KlinePayload {
   l?: string
   c?: string
   v?: string
+  i?: string // 周期（如 5m）
   x?: boolean
 }
 
@@ -398,4 +401,19 @@ function symbolFromStream(stream?: string): string | undefined {
   if (!stream) return undefined
   const at = stream.indexOf('@')
   return at === -1 ? undefined : stream.slice(0, at)
+}
+
+// 从合并流 stream 名提取周期（btcusdt@kline_5m → 5m）
+function intervalFromStream(stream?: string): string | undefined {
+  if (!stream) return undefined
+  const marker = '@kline_'
+  const at = stream.indexOf(marker)
+  return at === -1 ? undefined : stream.slice(at + marker.length)
+}
+
+// 构造合并流订阅项：symbol × interval → ["btcusdt@kline_1m", ...]
+export function buildKlineStreams(symbols: string[], intervals: string[]): string[] {
+  const syms = symbols.filter((s) => s.trim() !== '')
+  const ivs = intervals.filter((i) => i.trim() !== '')
+  return syms.flatMap((s) => ivs.map((iv) => `${s.toLowerCase()}@kline_${iv}`))
 }
