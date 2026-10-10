@@ -92,12 +92,14 @@ export class BinanceSource implements DataSource {
   // 拉取全量 exchangeInfo（注意：Binance 会忽略 ?symbol= 过滤参数，始终返回全量列表）
   private async fetchExchangeSymbols(): Promise<Array<{
     symbol: string
+    underlyingType?: string
     filters?: Array<{ filterType: string; tickSize?: string }>
   }>> {
     const url = `${this.baseUrl}/fapi/v1/exchangeInfo`
     const data = (await this.http.getJson(url)) as {
       symbols?: Array<{
         symbol: string
+        underlyingType?: string
         filters?: Array<{ filterType: string; tickSize?: string }>
       }>
     }
@@ -111,6 +113,19 @@ export class BinanceSource implements DataSource {
     const priceFilter = sym.filters?.find((f) => f.filterType === 'PRICE_FILTER')
     if (!priceFilter?.tickSize) throw new Error(`symbol ${symbol} 缺少 PRICE_FILTER/tickSize`)
     return new BigNumber(priceFilter.tickSize)
+  }
+
+  // 查询 symbols 的底层类型（underlyingType：COIN/EQUITY/COMMODITY…）；未找到补 null
+  async fetchUnderlyingTypes(symbols: string[]): Promise<Map<string, string | null>> {
+    const want = new Set(symbols)
+    const out = new Map<string, string | null>()
+    for (const s of await this.fetchExchangeSymbols()) {
+      if (want.has(s.symbol)) out.set(s.symbol, s.underlyingType ?? null)
+    }
+    for (const sym of symbols) {
+      if (!out.has(sym)) out.set(sym, null)
+    }
+    return out
   }
 
   // 拉取历史 K 线（自动分页 + 本地缓存）。未指定 endTime 时以当前时间为准。

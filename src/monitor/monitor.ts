@@ -30,6 +30,8 @@ export interface MonitorContext {
   engines: Map<string, Engine>
   lastProcessed: Map<string, number>
   marketStatus?: (mic: MarketMic, now?: DateTime) => Promise<MarketStatus>
+  // symbol → underlyingType（Binance）。undefined 表示未获取/获取失败（此时非美股交易日不抑制，fail-open）
+  symbolUnderlyingTypes?: Map<string, string | null>
 }
 
 // 解析某会话对应市场的开闭状态（失败返回 null，不阻断告警）
@@ -83,10 +85,15 @@ export async function handleClosedBar(
     if (!ctx.config.monitor.sessions.includes(res.session)) {
       return []
     }
-    // 非美股交易日（NYSE 休市）全局静默：所有标的都不推送
+    // 非美股交易日（NYSE 休市）：豁免加密货币（underlyingType=COIN），其余标的不推送
     if (ctx.config.monitor.suppressOnNonUsTradingDays && (await isUsMarketHoliday(ctx, res.time))) {
-      logger.info(`[监控] ${symbol} 非美股交易日（NYSE 休市），跳过推送（${res.session} FVG）`)
-      return []
+      const type = ctx.symbolUnderlyingTypes?.get(symbol)
+      // COIN 豁免；类型信息未获取（undefined）时 fail-open 照常推送
+      const exempt = type === 'COIN' || ctx.symbolUnderlyingTypes === undefined
+      if (!exempt) {
+        logger.info(`[监控] ${symbol}（${type ?? '未知'}）非美股交易日，跳过推送（${res.session} FVG）`)
+        return []
+      }
     }
     const market = await resolveMarketStatus(ctx, res.session)
     for (const fvg of res.createdFvgs) {
@@ -194,6 +201,19 @@ export async function runMonitor(
     : null
   ctx.marketStatus = createMarketStatusResolver(config.market, createHttpClient(proxy))
   const unsubs: Array<() => void> = []
+
+  // 查询各 symbol 的 underlyingType（识别加密货币 COIN，用于非美股交易日豁免）
+  try {
+    const types = await source.fetchUnderlyingTypes?.(config.monitor.symbols)
+    if (types) {
+      ctx.symbolUnderlyingTypes = types
+      const coins = config.monitor.symbols.filter((s) => types.get(s) === 'COIN')
+      if (coins.length > 0) logger.info(`[监控] 加密货币（非美股交易日豁免）：${coins.join(', ')}`)
+    }
+  } catch (err) {
+    // 获取失败 → 保持 undefined（fail-open：非美股交易日不抑制）
+    logger.warn(`[监控] 查询 underlyingType 失败，非美股交易日不抑制通知: ${(err as Error).message}`)
+  }
 
   // 预热：每币种拉历史并 run（静默建状态；live 模式：不累积输出、按存活窗口剪枝 FVG）
   for (const symbol of config.monitor.symbols) {

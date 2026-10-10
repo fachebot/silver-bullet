@@ -86,15 +86,20 @@ WS 断线自动重连（指数退避 1s→60s 封顶，`error` 也触发重连�
 
 > 阈值为绝对价格，币价长期大幅变动后需相应调整。
 
-### 非美股交易日不推送（全局静默）
+### 非美股交易日门控（加密货币豁免）
 
-`monitor.suppressOnNonUsTradingDays`（默认 `true`）开启时：以 **NYSE（`XNYS`）** 交易日历为准，**非美股交易日（周末/美股法定假日）当天，所有标的的 FVG 告警与会话边界通知一律不推送**（含加密货币/黄金等）。判定按 `market` 交易日历（FinCal API + 本地降级）。
+`monitor.suppressOnNonUsTradingDays`（默认 `true`）开启时：以 **NYSE（`XNYS`）** 交易日历为准，**非美股交易日（周末/美股法定假日）当天**：
 
-- **半天日**算美股交易日，**正常推送**。
-- 判定按 **bar 时间 / 边界时刻** 所属的 NYSE 日；补数回放历史 bar 时按该 bar 当日判定。
-- **会话边界通知**在美股休市日**一并跳过**。
-- 市场状态查询失败时 **fail-open**（视为交易日、照常推送），不会漏报。
-- 设为 `false` 可关闭该门控（恢复 24/7 推送）。
+- **加密货币（Binance `underlyingType=COIN`）豁免**：仍在银弹会话（`monitor.sessions`）内**照常推送** FVG 告警（周末加密 24/7，不应漏报）。
+- **其他标的**（股票 `EQUITY`、黄金等 `COMMODITY`、`INDEX`、`HK/KR/CN_EQUITY`、`PREMARKET` 等）**不推送**。
+- **会话边界通知**为全局通知，在美股休市日**仍静默**（不豁免）。
+
+其他说明：
+
+- 判定按 `market` 交易日历（FinCal API + 本地降级）；**半天日**算美股交易日、正常推送。
+- 判定按 **bar 时间** 所属的 NYSE 日；补数回放历史 bar 时按该 bar 当日判定。
+- 启动时会查询各 symbol 的 `underlyingType` 识别 `COIN`（记录日志）。**查询失败时 fail-open**：非美股交易日不再抑制（照常推送），避免漏掉加密信号。
+- 设为 `false` 可关闭该门控（恢复 24/7 全标的推送）。
 
 ### 会话边界通知
 
@@ -217,7 +222,7 @@ tests/        单元测试与集成测试
 | `monitor.pollSeconds` | `5` | REST 轮询兜底间隔（秒），0 = 关闭 |
 | `monitor.useWebSocket` | `true` | 是否订阅 WS（fstream 可能被网络封锁，可关） |
 | `monitor.notifySessionBoundary` | `true` | 会话开始/结束时 Lark 加急通知（NY 整点） |
-| `monitor.suppressOnNonUsTradingDays` | `true` | 非美股交易日（NYSE 休市）时所有标的与会话边界均不推送 |
+| `monitor.suppressOnNonUsTradingDays` | `true` | 非美股交易日（NYSE 休市）时不推送非加密货币（COIN 豁免）；会话边界始终静默 |
 | `monitor.sessions` | `["AM"]` | 仅这些会话产生 FVG 告警与会话边界通知（可含 `"LN"`/`"AM"`/`"PM"`；默认仅纽约早盘） |
 | `monitor.lark.*` | — | Lark 应用加急配置（见"实时监控"） |
 | `market.statusApiBase` | `https://fincalapi.com` | FinCal API 地址 |
@@ -334,6 +339,8 @@ export class OkxSource implements DataSource {
   intervalToMs(interval: string): number { /* ... */ }
   fetchKlines(req: KlineRequest): Promise<Kline[]> { /* ... */ }
   fetchTickSize(symbol: string): Promise<BigNumber> { /* ... */ }
+  // 可选：返回 symbol 的底层类型（用于识别加密货币 COIN，非美股交易日豁免）；不实现即无豁免
+  fetchUnderlyingTypes?(symbols: string[]): Promise<Map<string, string | null>> { /* ... */ }
 }
 ```
 

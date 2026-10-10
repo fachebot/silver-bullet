@@ -264,15 +264,18 @@ describe('handleClosedBar（收盘处理）', () => {
   })
 })
 
-describe('非美股交易日不推送（全局门控）', () => {
+describe('非美股交易日门控（加密货币豁免）', () => {
   const holiday: MarketStatus = { phase: 'holiday', openTime: null, closeTime: null, source: 'local' }
   const open: MarketStatus = { phase: 'open', openTime: '09:30', closeTime: '16:00', source: 'local' }
 
-  function setup(suppress = true): { ctx: MonitorContext; lark: { texts: string[]; notify: (t: string) => Promise<void> } } {
+  function setup(opts: { suppress?: boolean; type?: string | null; typesKnown?: boolean } = {}): {
+    ctx: MonitorContext
+    lark: { texts: string[]; notify: (t: string) => Promise<void> }
+  } {
     const config = structuredClone(defaultConfig)
     config.fvg.mode = 'All FVG'
     config.monitor.sessions = ['LN', 'AM', 'PM']
-    config.monitor.suppressOnNonUsTradingDays = suppress
+    config.monitor.suppressOnNonUsTradingDays = opts.suppress ?? true
     const cfg = deriveConfig(config, new BigNumber('0.1'))
     const engine = new Engine(cfg, 'BTCUSDT', '5m')
     for (let i = 0; i < 12; i++) {
@@ -285,13 +288,16 @@ describe('非美股交易日不推送（全局门控）', () => {
       engines: new Map([['BTCUSDT', engine]]),
       lastProcessed: new Map([['BTCUSDT', T0 + 11 * 300_000]]),
     }
+    if (opts.typesKnown ?? true) {
+      ctx.symbolUnderlyingTypes = new Map([['BTCUSDT', opts.type ?? 'COIN']])
+    }
     return { ctx, lark }
   }
   // bar12（07:30 UTC = 03:30 NY，LN 内）收盘产生 bull FVG → 正常应告警
   const bar12 = () => mkBar(T0 + 12 * 300_000, 104, 105, 103, 104.5)
 
-  it('NYSE 休市日 → 任意标的都不生成/不推送告警', async () => {
-    const { ctx, lark } = setup()
+  it('休市 + 非加密货币（EQUITY）→ 不推送', async () => {
+    const { ctx, lark } = setup({ type: 'EQUITY' })
     let calls = 0
     ctx.marketStatus = async () => {
       calls++
@@ -303,24 +309,40 @@ describe('非美股交易日不推送（全局门控）', () => {
     expect(calls).toBe(1) // 查询了 NYSE 状态
   })
 
-  it('NYSE 交易日 → 正常告警', async () => {
-    const { ctx, lark } = setup()
-    ctx.marketStatus = async () => open
-    const res = await handleClosedBar(ctx, 'BTCUSDT', bar12(), lark as never)
-    expect(res).toHaveLength(1)
-    expect(lark.texts).toHaveLength(1)
-  })
-
-  it('开关关闭时 → 即使 NYSE 休市也照常告警', async () => {
-    const { ctx, lark } = setup(false)
+  it('休市 + 加密货币（COIN）→ 照常推送', async () => {
+    const { ctx, lark } = setup({ type: 'COIN' })
     ctx.marketStatus = async () => holiday
     const res = await handleClosedBar(ctx, 'BTCUSDT', bar12(), lark as never)
     expect(res).toHaveLength(1)
     expect(lark.texts).toHaveLength(1)
   })
 
-  it('市场状态查询抛错 → fail-open 照常告警', async () => {
-    const { ctx, lark } = setup()
+  it('休市 + 类型信息缺失 → fail-open 照常推送', async () => {
+    const { ctx, lark } = setup({ typesKnown: false })
+    ctx.marketStatus = async () => holiday
+    const res = await handleClosedBar(ctx, 'BTCUSDT', bar12(), lark as never)
+    expect(res).toHaveLength(1)
+    expect(lark.texts).toHaveLength(1)
+  })
+
+  it('交易日 → 正常推送（非 COIN 也推送）', async () => {
+    const { ctx, lark } = setup({ type: 'EQUITY' })
+    ctx.marketStatus = async () => open
+    const res = await handleClosedBar(ctx, 'BTCUSDT', bar12(), lark as never)
+    expect(res).toHaveLength(1)
+    expect(lark.texts).toHaveLength(1)
+  })
+
+  it('开关关闭时 → 休市日非 COIN 也照常推送', async () => {
+    const { ctx, lark } = setup({ suppress: false, type: 'EQUITY' })
+    ctx.marketStatus = async () => holiday
+    const res = await handleClosedBar(ctx, 'BTCUSDT', bar12(), lark as never)
+    expect(res).toHaveLength(1)
+    expect(lark.texts).toHaveLength(1)
+  })
+
+  it('市场状态查询抛错 → fail-open 照常推送', async () => {
+    const { ctx, lark } = setup({ type: 'EQUITY' })
     ctx.marketStatus = async () => {
       throw new Error('down')
     }

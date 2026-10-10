@@ -222,6 +222,35 @@ describe('fetchKlines 完整性（注入假 http，不落脏缓存）', () => {
   })
 })
 
+describe('BinanceSource.fetchUnderlyingTypes（加密货币识别）', () => {
+  function makeSource(symbols: unknown[]): BinanceSource {
+    const http: HttpClient = {
+      async getJson() {
+        return { symbols }
+      },
+      async postJson() {
+        return {}
+      },
+    }
+    return new BinanceSource({ http })
+  }
+
+  it('解析 underlyingType；未找到/无值的 symbol 补 null', async () => {
+    const src = makeSource([
+      { symbol: 'BTCUSDT', underlyingType: 'COIN' },
+      { symbol: 'TSLAUSDT', underlyingType: 'EQUITY' },
+      { symbol: 'XAUUSDT', underlyingType: 'COMMODITY' },
+      { symbol: 'NOFILTER' },
+    ])
+    const m = await src.fetchUnderlyingTypes(['BTCUSDT', 'TSLAUSDT', 'XAUUSDT', 'NOFILTER', 'MISSINGUSDT'])
+    expect(m.get('BTCUSDT')).toBe('COIN')
+    expect(m.get('TSLAUSDT')).toBe('EQUITY')
+    expect(m.get('XAUUSDT')).toBe('COMMODITY')
+    expect(m.get('NOFILTER')).toBeNull()
+    expect(m.get('MISSINGUSDT')).toBeNull()
+  })
+})
+
 describe('BinanceSource.fetchTickSize（全量 exchangeInfo 中查找）', () => {
   function makeSource(symbols: unknown[]): BinanceSource {
     const http: HttpClient = {
